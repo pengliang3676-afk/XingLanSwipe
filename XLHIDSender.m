@@ -133,14 +133,17 @@ static double XLRandom(double minimum, double maximum) {
             return;
         }
 
-        double startX = XLRandom(0.46, 0.54);
-        double startY = XLRandom(0.77, 0.84);
-        double endX = XLRandom(0.45, 0.55);
-        double endY = XLRandom(0.25, 0.34);
-        double controlOffset = XLRandom(-0.035, 0.035);
-        double duration = XLRandom(0.28, 0.38);
-        NSInteger steps = 28 + (NSInteger)arc4random_uniform(9);
+        // Keep the gesture in the central content area so app buttons, edge
+        // gestures and horizontal carousels are less likely to consume it.
+        double startX = XLRandom(0.47, 0.53);
+        double startY = XLRandom(0.82, 0.87);
+        double endX = XLRandom(0.47, 0.53);
+        double endY = XLRandom(0.20, 0.27);
+        double controlOffset = XLRandom(-0.018, 0.018);
+        double duration = XLRandom(0.45, 0.60);
+        NSInteger steps = 38 + (NSInteger)arc4random_uniform(9);
         BOOL success = [self sendX:startX y:startY phase:XLTouchPhaseDown];
+        if (success) usleep(30000 + arc4random_uniform(18001));
 
         for (NSInteger i = 1; success && i <= steps; i++) {
             double t = (double)i / (double)steps;
@@ -151,7 +154,10 @@ static double XLRandom(double minimum, double maximum) {
             success = [self sendX:x y:y phase:XLTouchPhaseMove];
             usleep((useconds_t)((duration / (double)steps) * 1000000.0));
         }
-        if (success) success = [self sendX:endX y:endY phase:XLTouchPhaseUp];
+        if (success) {
+            usleep(12000 + arc4random_uniform(9001));
+            success = [self sendX:endX y:endY phase:XLTouchPhaseUp];
+        }
 
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion) completion(success);
