@@ -23,11 +23,11 @@ jobs:
           path: theos-roothide
           submodules: recursive
 
-      - name: Install iOS SDK
-        run: |
-          export THEOS="$GITHUB_WORKSPACE/theos-roothide"
-          cd "$THEOS"
-          ./bin/install-sdk iPhoneOS16.5
+      - name: Install iOS SDKs
+        uses: actions/checkout@v4
+        with:
+          repository: theos/sdks
+          path: theos-roothide/sdks
 
       - name: Configure scheme
         run: |
