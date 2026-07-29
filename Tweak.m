@@ -86,8 +86,10 @@ static void XLStop(void) {
     xlRunning = !xlRunning;
     XLUpdateButton();
     if (xlRunning) {
-        XLScheduleNext();
-        NSLog(@"[XingLanSwipe] started");
+        // Test build only: perform one swipe immediately so HID injection can
+        // be verified without waiting, then continue at random 10-30s delays.
+        XLPerformSwipe();
+        NSLog(@"[XingLanSwipe] started with immediate test swipe");
     } else {
         XLCancelTimer();
         NSLog(@"[XingLanSwipe] stopped by user");

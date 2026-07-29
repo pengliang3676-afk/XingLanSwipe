@@ -11,6 +11,7 @@ typedef void (*DispatchEventFn)(IOHIDEventSystemClientRef client, IOHIDEventRef 
 typedef void (*AppendEventFn)(IOHIDEventRef parent, IOHIDEventRef child, uint32_t options);
 typedef void (*SetIntegerValueFn)(IOHIDEventRef event, uint32_t field, CFIndex value);
 typedef void (*SetFloatValueFn)(IOHIDEventRef event, uint32_t field, double value);
+typedef void (*SetSenderIDFn)(IOHIDEventRef event, uint64_t senderID);
 typedef IOHIDEventRef (*DigitizerEventFn)(CFAllocatorRef, uint64_t, uint32_t,
     uint32_t, uint32_t, uint32_t, uint32_t, double, double, double, double,
     double, bool, bool, uint32_t);
@@ -39,6 +40,7 @@ typedef NS_ENUM(NSInteger, XLTouchPhase) {
     AppendEventFn _append;
     SetIntegerValueFn _setInteger;
     SetFloatValueFn _setFloat;
+    SetSenderIDFn _setSenderID;
     DigitizerEventFn _createDigitizer;
     FingerEventFn _createFinger;
     dispatch_queue_t _queue;
@@ -55,6 +57,7 @@ typedef NS_ENUM(NSInteger, XLTouchPhase) {
         _append = (AppendEventFn)dlsym(_ioKit, "IOHIDEventAppendEvent");
         _setInteger = (SetIntegerValueFn)dlsym(_ioKit, "IOHIDEventSetIntegerValue");
         _setFloat = (SetFloatValueFn)dlsym(_ioKit, "IOHIDEventSetFloatValue");
+        _setSenderID = (SetSenderIDFn)dlsym(_ioKit, "IOHIDEventSetSenderID");
         _createDigitizer = (DigitizerEventFn)dlsym(_ioKit, "IOHIDEventCreateDigitizerEvent");
         _createFinger = (FingerEventFn)dlsym(_ioKit, "IOHIDEventCreateDigitizerFingerEvent");
         if (_createClient) _client = _createClient(kCFAllocatorDefault);
@@ -69,6 +72,7 @@ typedef NS_ENUM(NSInteger, XLTouchPhase) {
 
 - (BOOL)ready {
     return _client && _dispatch && _append && _setInteger && _setFloat &&
+        _setSenderID &&
         _createDigitizer && _createFinger;
 }
 
@@ -106,6 +110,9 @@ typedef NS_ENUM(NSInteger, XLTouchPhase) {
     _setFloat(finger, XLMajorRadius, 0.04);
     _setFloat(finger, XLMinorRadius, 0.04);
     _append(parent, finger, 0);
+    // TrollVNC uses this BackBoard-compatible sender identity. Without it,
+    // dispatch may return normally while the foreground app ignores the event.
+    _setSenderID(parent, 0x8000000817319371ULL);
     _dispatch(_client, parent);
     CFRelease(finger);
     CFRelease(parent);
