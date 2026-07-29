@@ -1,0 +1,44 @@
+name: Build XingLan Swipe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [rootless, roothide]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install ldid make
+
+      - name: Install RootHide Theos
+        uses: actions/checkout@v4
+        with:
+          repository: roothide/theos
+          path: theos-roothide
+          submodules: recursive
+
+      - name: Install iOS SDK
+        run: |
+          export THEOS="$GITHUB_WORKSPACE/theos-roothide"
+          cd "$THEOS"
+          ./bin/install-sdk iPhoneOS16.5
+
+      - name: Configure scheme
+        run: |
+          echo "THEOS=$GITHUB_WORKSPACE/theos-roothide" >> "$GITHUB_ENV"
+          echo "THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}" >> "$GITHUB_ENV"
+
+      - name: Build package
+        run: gmake clean package FINALPACKAGE=1
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: XingLanSwipe-${{ matrix.scheme }}
+          path: packages/*.deb
