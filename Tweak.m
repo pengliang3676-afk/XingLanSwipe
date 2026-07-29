@@ -3,10 +3,8 @@
 #import <notify.h>
 #import "XLHIDSender.h"
 
-// Test build: shorten the interval so real-device swipe injection can be
-// verified quickly. Restore to 180 / 300 after the device test passes.
-static const uint32_t XLMinimumDelay = 10;
-static const uint32_t XLMaximumDelay = 30;
+static const uint32_t XLMinimumDelay = 180;
+static const uint32_t XLMaximumDelay = 300;
 static NSString *const XLPositionXKey = @"XingLanSwipeButtonX";
 static NSString *const XLPositionYKey = @"XingLanSwipeButtonY";
 
@@ -86,10 +84,8 @@ static void XLStop(void) {
     xlRunning = !xlRunning;
     XLUpdateButton();
     if (xlRunning) {
-        // Test build only: perform one swipe immediately so HID injection can
-        // be verified without waiting, then continue at random 10-30s delays.
-        XLPerformSwipe();
-        NSLog(@"[XingLanSwipe] started with immediate test swipe");
+        XLScheduleNext();
+        NSLog(@"[XingLanSwipe] started");
     } else {
         XLCancelTimer();
         NSLog(@"[XingLanSwipe] stopped by user");
