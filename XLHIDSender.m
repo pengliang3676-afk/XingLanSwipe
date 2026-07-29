@@ -75,13 +75,22 @@ typedef NS_ENUM(NSInteger, XLTouchPhase) {
 - (BOOL)sendX:(double)x y:(double)y phase:(XLTouchPhase)phase {
     if (![self ready]) return NO;
     BOOL touching = phase != XLTouchPhaseUp;
-    uint32_t childMask = phase == XLTouchPhaseMove
-        ? XLPosition : (XLTouch | XLRange);
-    uint32_t parentMask = phase == XLTouchPhaseMove ? 0 : XLTouch;
+    uint32_t childMask = 0;
+    switch (phase) {
+        case XLTouchPhaseDown:
+            childMask = XLTouch | XLRange;
+            break;
+        case XLTouchPhaseMove:
+            childMask = XLPosition;
+            break;
+        case XLTouchPhaseUp:
+            childMask = XLTouch;
+            break;
+    }
     uint64_t timestamp = mach_absolute_time();
 
     IOHIDEventRef parent = _createDigitizer(kCFAllocatorDefault, timestamp,
-        3, 0, 0, parentMask, 0, 0, 0, 0, 0, 0, false, touching, 0);
+        3, 99, 1, 0, 0, 0, 0, 0, 0, 0, false, false, 0);
     IOHIDEventRef finger = _createFinger(kCFAllocatorDefault, timestamp,
         1, 3, childMask, x, y, 0, touching ? 1.0 : 0.0, 0,
         touching, touching, 0);
@@ -92,9 +101,10 @@ typedef NS_ENUM(NSInteger, XLTouchPhase) {
     }
 
     _setInteger(parent, XLDisplayIntegrated, 1);
+    _setInteger(parent, 0x4, 1);
     _setInteger(finger, XLDisplayIntegrated, 1);
-    _setFloat(finger, XLMajorRadius, 0.035);
-    _setFloat(finger, XLMinorRadius, 0.030);
+    _setFloat(finger, XLMajorRadius, 0.04);
+    _setFloat(finger, XLMinorRadius, 0.04);
     _append(parent, finger, 0);
     _dispatch(_client, parent);
     CFRelease(finger);
@@ -143,4 +153,3 @@ static double XLRandom(double minimum, double maximum) {
 }
 
 @end
-

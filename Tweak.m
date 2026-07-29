@@ -3,8 +3,10 @@
 #import <notify.h>
 #import "XLHIDSender.h"
 
-static const uint32_t XLMinimumDelay = 180;
-static const uint32_t XLMaximumDelay = 300;
+// Test build: shorten the interval so real-device swipe injection can be
+// verified quickly. Restore to 180 / 300 after the device test passes.
+static const uint32_t XLMinimumDelay = 10;
+static const uint32_t XLMaximumDelay = 30;
 static NSString *const XLPositionXKey = @"XingLanSwipeButtonX";
 static NSString *const XLPositionYKey = @"XingLanSwipeButtonY";
 
