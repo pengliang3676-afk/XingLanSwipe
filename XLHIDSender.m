@@ -140,7 +140,7 @@ static double XLRandom(double minimum, double maximum) {
         double endX = XLRandom(0.47, 0.53);
         double endY = XLRandom(0.20, 0.27);
         double controlOffset = XLRandom(-0.018, 0.018);
-        double duration = 0.30;
+        double duration = 0.20;
         NSInteger steps = 30;
         BOOL success = [self sendX:startX y:startY phase:XLTouchPhaseDown];
         if (success) usleep(30000 + arc4random_uniform(18001));
