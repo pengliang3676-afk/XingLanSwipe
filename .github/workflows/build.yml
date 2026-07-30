@@ -2,6 +2,16 @@ name: Build XingLan Swipe
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Tweak.m"
+      - "XLHIDSender.h"
+      - "XLHIDSender.m"
+      - "XingLanSwipe.plist"
+      - "Makefile"
+      - "control"
+      - ".github/workflows/build.yml"
 
 jobs:
   build:
