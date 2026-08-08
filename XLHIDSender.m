@@ -165,4 +165,43 @@ static double XLRandom(double minimum, double maximum) {
     });
 }
 
+- (void)performSystemBackSwipeWithCompletion:(XLHIDCompletion)completion {
+    dispatch_async(_queue, ^{
+        if (![self ready]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(NO);
+            });
+            return;
+        }
+
+        // Start at the left system-gesture edge and move across the app.
+        // The vertical range avoids the status bar and bottom home indicator.
+        double startX = XLRandom(0.006, 0.018);
+        double startY = XLRandom(0.40, 0.62);
+        double endX = XLRandom(0.46, 0.58);
+        double endY = startY + XLRandom(-0.025, 0.025);
+        double duration = XLRandom(0.26, 0.34);
+        NSInteger steps = 34;
+        BOOL success = [self sendX:startX y:startY phase:XLTouchPhaseDown];
+        if (success) usleep(30000 + arc4random_uniform(18001));
+
+        for (NSInteger i = 1; success && i <= steps; i++) {
+            double t = (double)i / (double)steps;
+            double eased = t * t * (3.0 - 2.0 * t);
+            double x = startX + (endX - startX) * eased;
+            double y = startY + (endY - startY) * eased;
+            success = [self sendX:x y:y phase:XLTouchPhaseMove];
+            usleep((useconds_t)((duration / (double)steps) * 1000000.0));
+        }
+        if (success) {
+            usleep(12000 + arc4random_uniform(9001));
+            success = [self sendX:endX y:endY phase:XLTouchPhaseUp];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(success);
+        });
+    });
+}
+
 @end

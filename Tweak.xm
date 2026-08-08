@@ -6,8 +6,11 @@
 
 static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
+static const uint32_t XLBackMinimumDelay = 300;
+static const uint32_t XLBackMaximumDelay = 600;
 
 static dispatch_source_t xlTimer;
+static dispatch_source_t xlBackTimer;
 static XLHIDSender *xlSender;
 static BOOL xlRunning = NO;
 static UIWindow *xlStatusWindow;
@@ -38,7 +41,15 @@ static void XLCancelTimer(void) {
     }
 }
 
+static void XLCancelBackTimer(void) {
+    if (xlBackTimer) {
+        dispatch_source_cancel(xlBackTimer);
+        xlBackTimer = nil;
+    }
+}
+
 static void XLScheduleNext(void);
+static void XLScheduleNextBackSwipe(void);
 
 static void XLPerformSwipe(void) {
     XLCancelTimer();
@@ -47,6 +58,16 @@ static void XLPerformSwipe(void) {
     [xlSender performNaturalUpSwipeWithCompletion:^(BOOL success) {
         NSLog(@"[XingLanSwipe] local swipe %@", success ? @"success" : @"failed");
         if (xlRunning) XLScheduleNext();
+    }];
+}
+
+static void XLPerformBackSwipe(void) {
+    XLCancelBackTimer();
+    if (!xlRunning) return;
+    if (!xlSender) xlSender = [XLHIDSender new];
+    [xlSender performSystemBackSwipeWithCompletion:^(BOOL success) {
+        NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
+        if (xlRunning) XLScheduleNextBackSwipe();
     }];
 }
 
@@ -65,6 +86,21 @@ static void XLScheduleNext(void) {
     dispatch_resume(xlTimer);
 }
 
+static void XLScheduleNextBackSwipe(void) {
+    XLCancelBackTimer();
+    if (!xlRunning) return;
+    uint32_t delay = XLBackMinimumDelay +
+        arc4random_uniform(XLBackMaximumDelay - XLBackMinimumDelay + 1);
+    NSLog(@"[XingLanSwipe] next system back swipe in %u seconds", delay);
+    xlBackTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+        dispatch_get_main_queue());
+    dispatch_source_set_timer(xlBackTimer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
+        DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
+    dispatch_source_set_event_handler(xlBackTimer, ^{ XLPerformBackSwipe(); });
+    dispatch_resume(xlBackTimer);
+}
+
 static void XLSetRunning(BOOL running) {
     CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
         running ? kCFBooleanTrue : kCFBooleanFalse,
@@ -79,9 +115,11 @@ static void XLSetRunning(BOOL running) {
     xlRunning = running;
     if (xlRunning) {
         XLScheduleNext();
+        XLScheduleNextBackSwipe();
         NSLog(@"[XingLanSwipe] started from Control Center");
     } else {
         XLCancelTimer();
+        XLCancelBackTimer();
         NSLog(@"[XingLanSwipe] stopped");
     }
     XLUpdateUI();
