@@ -180,16 +180,18 @@ static double XLRandom(double minimum, double maximum) {
         double startY = XLRandom(0.40, 0.62);
         double endX = XLRandom(0.46, 0.58);
         double endY = startY + XLRandom(-0.025, 0.025);
-        double duration = XLRandom(0.26, 0.34);
-        NSInteger steps = 34;
+        double controlOffset = XLRandom(-0.018, 0.018);
+        double duration = 0.20;
+        NSInteger steps = 30;
         BOOL success = [self sendX:startX y:startY phase:XLTouchPhaseDown];
         if (success) usleep(30000 + arc4random_uniform(18001));
 
         for (NSInteger i = 1; success && i <= steps; i++) {
             double t = (double)i / (double)steps;
             double eased = t * t * (3.0 - 2.0 * t);
+            double curve = 4.0 * t * (1.0 - t) * controlOffset;
             double x = startX + (endX - startX) * eased;
-            double y = startY + (endY - startY) * eased;
+            double y = startY + (endY - startY) * eased + curve;
             success = [self sendX:x y:y phase:XLTouchPhaseMove];
             usleep((useconds_t)((duration / (double)steps) * 1000000.0));
         }
