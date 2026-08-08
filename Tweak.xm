@@ -10,13 +10,24 @@ static const uint32_t XLMaximumDelay = 300;
 static dispatch_source_t xlTimer;
 static XLHIDSender *xlSender;
 static BOOL xlRunning = NO;
+static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
+
+@interface XLStatusOverlayWindow : UIWindow
+@end
+
+@implementation XLStatusOverlayWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    (void)point; (void)event;
+    return nil;
+}
+@end
 
 static void XLUpdateUI(void) {
     UILabel *status = xlHomeStatusLabel;
     if (status) {
         status.hidden = !xlRunning;
-        status.text = @"A";
+        status.text = @"开";
     }
 }
 
@@ -76,39 +87,50 @@ static void XLSetRunning(BOOL running) {
     XLUpdateUI();
 }
 
-static void XLInstallHomeStatus(UIView *homeView) {
-    if (!homeView) return;
-    if (xlHomeStatusLabel.superview == homeView) {
+static void XLInstallStatusOverlay(void) {
+    if (xlStatusWindow) {
         XLUpdateUI();
         return;
     }
 
-    [xlHomeStatusLabel removeFromSuperview];
+    XLStatusOverlayWindow *window = [[XLStatusOverlayWindow alloc]
+        initWithFrame:UIScreen.mainScreen.bounds];
+    window.windowLevel = UIWindowLevelStatusBar + 1.0;
+    window.backgroundColor = UIColor.clearColor;
+    window.userInteractionEnabled = NO;
+
+    UIViewController *controller = [UIViewController new];
+    controller.view.backgroundColor = UIColor.clearColor;
+    controller.view.userInteractionEnabled = NO;
+    window.rootViewController = controller;
+
     UILabel *status = [UILabel new];
     status.translatesAutoresizingMaskIntoConstraints = NO;
     status.userInteractionEnabled = NO;
     status.textAlignment = NSTextAlignmentCenter;
-    status.font = [UIFont boldSystemFontOfSize:12.0];
+    status.font = [UIFont boldSystemFontOfSize:20.0];
     status.textColor = UIColor.whiteColor;
-    status.backgroundColor = [UIColor colorWithRed:0.04 green:0.45 blue:0.25 alpha:0.92];
-    status.layer.cornerRadius = 10.0;
-    status.layer.borderWidth = 1.0;
-    status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.30].CGColor;
-    status.layer.shadowColor = [UIColor colorWithRed:0.10 green:0.95 blue:0.50 alpha:1.0].CGColor;
-    status.layer.shadowOpacity = 0.72;
+    status.backgroundColor = [UIColor colorWithRed:0.05 green:0.46 blue:0.94 alpha:0.82];
+    status.layer.cornerRadius = 27.0;
+    status.layer.borderWidth = 1.5;
+    status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.80].CGColor;
+    status.layer.shadowColor = UIColor.blackColor.CGColor;
+    status.layer.shadowOpacity = 0.35;
     status.layer.shadowRadius = 4.0;
     status.layer.shadowOffset = CGSizeZero;
     status.clipsToBounds = YES;
-    [homeView addSubview:status];
+    [controller.view addSubview:status];
 
-    UILayoutGuide *safeArea = homeView.safeAreaLayoutGuide;
+    UILayoutGuide *safeArea = controller.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [status.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:5.0],
         [status.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor],
-        [status.widthAnchor constraintEqualToConstant:20.0],
-        [status.heightAnchor constraintEqualToConstant:20.0],
+        [status.widthAnchor constraintEqualToConstant:54.0],
+        [status.heightAnchor constraintEqualToConstant:54.0],
     ]];
+    xlStatusWindow = window;
     xlHomeStatusLabel = status;
+    window.hidden = NO;
     XLUpdateUI();
 }
 
@@ -130,19 +152,12 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
     dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
 }
 
-// 运行状态只显示在桌面左侧正中，作为不可点击的 A 高亮提示。
-%hook SBHomeScreenViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    XLInstallHomeStatus(((UIViewController *)self).view);
-}
-%end
-
 __attribute__((constructor))
 static void XingLanSwipeInit(void) {
     @autoreleasepool {
         dispatch_async(dispatch_get_main_queue(), ^{
             xlSender = [XLHIDSender new];
+            XLInstallStatusOverlay();
             XLSetRunning(NO);
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
