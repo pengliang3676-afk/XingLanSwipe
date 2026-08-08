@@ -14,7 +14,7 @@ XingLanSwipeModule_INSTALL_PATH = /Library/ControlCenter/Bundles
 XingLanSwipeModule_RESOURCE_DIRS = ControlCenterModule/Resources
 XingLanSwipeModule_CFLAGS = -fobjc-arc -Wall -Wextra
 XingLanSwipeModule_FRAMEWORKS = UIKit Foundation
-XingLanSwipeModule_PRIVATE_FRAMEWORKS = ControlCenterUIKit
+XingLanSwipeModule_LDFLAGS = -undefined dynamic_lookup
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/bundle.mk
