@@ -9,8 +9,8 @@ static const uint32_t XLMaximumDelay = 300;
 static dispatch_source_t xlTimer;
 static XLHIDSender *xlSender;
 static BOOL xlRunning = NO;
-static __weak UIButton *xlControlCenterButton;
-static __weak UILabel *xlHomeStatusLabel;
+static UIButton *xlControlCenterButton;
+static UILabel *xlHomeStatusLabel;
 
 @interface XLControlTarget : NSObject
 - (void)toggle:(id)sender;
@@ -181,11 +181,11 @@ static void XLLockCallback(CFNotificationCenterRef center, void *observer,
 %hook CCUIModularControlCenterOverlayViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    XLInstallControlCenterButton(self.view);
+    XLInstallControlCenterButton(((UIViewController *)self).view);
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
-    XLRemoveControlCenterButton(self.view);
+    XLRemoveControlCenterButton(((UIViewController *)self).view);
     %orig;
 }
 %end
@@ -194,7 +194,7 @@ static void XLLockCallback(CFNotificationCenterRef center, void *observer,
 %hook SBHomeScreenViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    XLInstallHomeStatus(self.view);
+    XLInstallHomeStatus(((UIViewController *)self).view);
 }
 %end
 
