@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <notify.h>
 #import "XLHIDSender.h"
+#import "XingLanSwipeShared.h"
 
 static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
@@ -9,24 +10,9 @@ static const uint32_t XLMaximumDelay = 300;
 static dispatch_source_t xlTimer;
 static XLHIDSender *xlSender;
 static BOOL xlRunning = NO;
-static UIButton *xlControlCenterButton;
 static UILabel *xlHomeStatusLabel;
 
-@interface XLControlTarget : NSObject
-- (void)toggle:(id)sender;
-@end
-
 static void XLUpdateUI(void) {
-    UIButton *button = xlControlCenterButton;
-    if (button) {
-        [button setTitle:xlRunning ? @"星澜\n运行中" : @"星澜\n滑屏"
-                forState:UIControlStateNormal];
-        button.backgroundColor = xlRunning
-            ? [UIColor colorWithRed:0.05 green:0.64 blue:0.37 alpha:0.96]
-            : [UIColor colorWithWhite:0.20 alpha:0.94];
-        button.accessibilityLabel = xlRunning ? @"停止星澜滑屏" : @"开始星澜滑屏";
-    }
-
     UILabel *status = xlHomeStatusLabel;
     if (status) {
         status.hidden = !xlRunning;
@@ -69,6 +55,11 @@ static void XLScheduleNext(void) {
 }
 
 static void XLSetRunning(BOOL running) {
+    CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
+        running ? kCFBooleanTrue : kCFBooleanFalse,
+        CFSTR(XLPreferenceDomain));
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+
     if (xlRunning == running) {
         XLUpdateUI();
         return;
@@ -83,55 +74,6 @@ static void XLSetRunning(BOOL running) {
         NSLog(@"[XingLanSwipe] stopped");
     }
     XLUpdateUI();
-}
-
-@implementation XLControlTarget
-- (void)toggle:(id)sender {
-    (void)sender;
-    XLSetRunning(!xlRunning);
-}
-@end
-
-static XLControlTarget *xlTarget;
-
-static void XLInstallControlCenterButton(UIView *container) {
-    if (!container) return;
-    if (xlControlCenterButton.superview == container) {
-        XLUpdateUI();
-        return;
-    }
-
-    [xlControlCenterButton removeFromSuperview];
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.layer.cornerRadius = 17.0;
-    button.layer.borderWidth = 1.0;
-    button.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.22].CGColor;
-    button.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
-    button.titleLabel.numberOfLines = 2;
-    button.titleLabel.textAlignment = NSTextAlignmentCenter;
-    button.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
-    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    [button addTarget:xlTarget action:@selector(toggle:)
-      forControlEvents:UIControlEventTouchUpInside];
-    [container addSubview:button];
-
-    UILayoutGuide *safeArea = container.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [button.widthAnchor constraintEqualToConstant:82.0],
-        [button.heightAnchor constraintEqualToConstant:66.0],
-        [button.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-18.0],
-        [button.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor constant:-22.0],
-    ]];
-    xlControlCenterButton = button;
-    XLUpdateUI();
-}
-
-static void XLRemoveControlCenterButton(UIView *container) {
-    if (xlControlCenterButton.superview == container) {
-        [xlControlCenterButton removeFromSuperview];
-        xlControlCenterButton = nil;
-    }
 }
 
 static void XLInstallHomeStatus(UIView *homeView) {
@@ -177,18 +119,16 @@ static void XLLockCallback(CFNotificationCenterRef center, void *observer,
     dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(NO); });
 }
 
-// iOS 15 控制中心显示时，动态放入星澜按钮；无需额外的悬浮窗口或桌面控件。
-%hook CCUIModularControlCenterOverlayViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    XLInstallControlCenterButton(((UIViewController *)self).view);
+static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *observer,
+                                         CFStringRef name, const void *object,
+                                         CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    CFPropertyListRef value = CFPreferencesCopyAppValue(
+        CFSTR(XLRunningPreferenceKey), CFSTR(XLPreferenceDomain));
+    BOOL running = (value && CFEqual(value, kCFBooleanTrue));
+    if (value) CFRelease(value);
+    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
 }
-
-- (void)viewDidDisappear:(BOOL)animated {
-    XLRemoveControlCenterButton(((UIViewController *)self).view);
-    %orig;
-}
-%end
 
 // 运行状态只显示在桌面左侧正中，作为不可点击的 A 高亮提示。
 %hook SBHomeScreenViewController
@@ -203,13 +143,18 @@ static void XingLanSwipeInit(void) {
     @autoreleasepool {
         dispatch_async(dispatch_get_main_queue(), ^{
             xlSender = [XLHIDSender new];
-            xlTarget = [XLControlTarget new];
+            XLSetRunning(NO);
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
                 NULL, XLLockCallback,
                 CFSTR("com.apple.springboard.lockcomplete"),
                 NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-            NSLog(@"[XingLanSwipe] loaded; use the Control Center button");
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL, XLControlCenterStateCallback,
+                CFSTR(XLControlCenterStateNotification),
+                NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+            NSLog(@"[XingLanSwipe] loaded; add the module in Control Center settings");
         });
     }
 }
