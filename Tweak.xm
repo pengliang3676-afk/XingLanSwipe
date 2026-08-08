@@ -131,8 +131,27 @@ static void XLInstallStatusOverlay(void) {
         return;
     }
 
-    XLStatusOverlayWindow *window = [[XLStatusOverlayWindow alloc]
-        initWithFrame:UIScreen.mainScreen.bounds];
+    CGRect bounds = UIScreen.mainScreen.bounds;
+    UIWindowScene *activeScene = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:UIWindowScene.class] &&
+            scene.activationState != UISceneActivationStateUnattached) {
+            activeScene = (UIWindowScene *)scene;
+            break;
+        }
+    }
+
+    XLStatusOverlayWindow *window;
+    if (@available(iOS 13.0, *)) {
+        if (activeScene) {
+            window = [[XLStatusOverlayWindow alloc] initWithWindowScene:activeScene];
+            window.frame = bounds;
+        } else {
+            window = [[XLStatusOverlayWindow alloc] initWithFrame:bounds];
+        }
+    } else {
+        window = [[XLStatusOverlayWindow alloc] initWithFrame:bounds];
+    }
     window.windowLevel = UIWindowLevelAlert + 1000.0;
     window.backgroundColor = UIColor.clearColor;
     window.userInteractionEnabled = NO;
