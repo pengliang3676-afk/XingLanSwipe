@@ -9,6 +9,8 @@ static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
+static const uint32_t XLConflictRetryDelay = 5;
+static const CFTimeInterval XLGestureCooldown = 5.0;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
@@ -16,7 +18,10 @@ static XLHIDSender *xlSender;
 static XLBackIconDetector *xlBackIconDetector;
 static dispatch_queue_t xlImageMatchQueue;
 static BOOL xlRunning = NO;
+static BOOL xlActionBusy = NO;
 static NSUInteger xlRunGeneration = 0;
+static CFAbsoluteTime xlLastGestureEndTime = 0.0;
+static CFAbsoluteTime xlNextBackCheckTime = 0.0;
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 
@@ -64,41 +69,77 @@ static void XLCancelBackTimer(void) {
         dispatch_source_cancel(xlBackTimer);
         xlBackTimer = nil;
     }
+    xlNextBackCheckTime = 0.0;
 }
 
 static void XLScheduleNext(void);
+static void XLScheduleSwipeAfterDelay(uint32_t delay);
 static void XLScheduleNextBackSwipe(void);
+static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification);
 static void XLPerformBackSwipe(BOOL quickVerification);
+
+static BOOL XLGestureCooldownIsActive(void) {
+    if (xlLastGestureEndTime <= 0.0) return NO;
+    return CFAbsoluteTimeGetCurrent() - xlLastGestureEndTime < XLGestureCooldown;
+}
 
 static void XLPerformSwipe(void) {
     XLCancelTimer();
     if (!xlRunning) return;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    BOOL backCheckDueSoon = xlNextBackCheckTime > 0.0 &&
+        xlNextBackCheckTime - now <= XLGestureCooldown;
+    if (xlActionBusy || XLGestureCooldownIsActive() || backCheckDueSoon) {
+        NSLog(@"[XingLanSwipe] local swipe deferred to avoid action conflict");
+        XLScheduleSwipeAfterDelay(XLConflictRetryDelay);
+        return;
+    }
+    xlActionBusy = YES;
+    NSUInteger generation = xlRunGeneration;
     if (!xlSender) xlSender = [XLHIDSender new];
     [xlSender performNaturalUpSwipeWithCompletion:^(BOOL success) {
-        NSLog(@"[XingLanSwipe] local swipe %@", success ? @"success" : @"failed");
-        if (xlRunning) XLScheduleNext();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != xlRunGeneration) return;
+            xlActionBusy = NO;
+            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+            NSLog(@"[XingLanSwipe] local swipe %@", success ? @"success" : @"failed");
+            if (xlRunning) XLScheduleNext();
+        });
     }];
 }
 
 static void XLDispatchBackSwipe(BOOL quickVerification) {
+    NSUInteger generation = xlRunGeneration;
     if (!xlSender) xlSender = [XLHIDSender new];
     [xlSender performSystemBackSwipeWithCompletion:^(BOOL success) {
-        NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
-        if (quickVerification && xlRunning) {
-            XLShowStatusText(success ? @"回✓" : @"回×", 2.0);
-        }
-        if (xlRunning) XLScheduleNextBackSwipe();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != xlRunGeneration) return;
+            xlActionBusy = NO;
+            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+            NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
+            if (quickVerification && xlRunning) {
+                XLShowStatusText(success ? @"回✓" : @"回×", 2.0);
+            }
+            if (xlRunning) XLScheduleNextBackSwipe();
+        });
     }];
 }
 
 static void XLPerformBackSwipe(BOOL quickVerification) {
     XLCancelBackTimer();
     if (!xlRunning) return;
+    if (xlActionBusy || XLGestureCooldownIsActive()) {
+        NSLog(@"[XingLanSwipe] back check deferred to avoid action conflict");
+        XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay, quickVerification);
+        return;
+    }
+    xlActionBusy = YES;
     if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
 
     NSError *captureError = nil;
     UIImage *screenshot = [xlBackIconDetector captureScreenWithError:&captureError];
     if (!screenshot) {
+        xlActionBusy = NO;
         NSLog(@"[XingLanSwipe] screen check skipped: %@",
               captureError.localizedDescription ?: @"screenshot unavailable");
         if (quickVerification) XLShowStatusText(@"图错", 3.0);
@@ -115,6 +156,7 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!xlRunning || generation != xlRunGeneration) return;
                 if (matchError) {
+                    xlActionBusy = NO;
                     NSLog(@"[XingLanSwipe] screen template match failed: %@",
                           matchError.localizedDescription);
                     if (quickVerification) XLShowStatusText(@"模错", 3.0);
@@ -122,6 +164,7 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
                     return;
                 }
                 if (score >= 0.50) {
+                    xlActionBusy = NO;
                     NSLog(@"[XingLanSwipe] profile template present (score %.4f); back swipe skipped", score);
                     if (quickVerification) {
                         XLShowStatusText(@"有我", 4.0);
@@ -136,11 +179,9 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
     });
 }
 
-static void XLScheduleNext(void) {
+static void XLScheduleSwipeAfterDelay(uint32_t delay) {
     XLCancelTimer();
     if (!xlRunning) return;
-    uint32_t delay = XLMinimumDelay +
-        arc4random_uniform(XLMaximumDelay - XLMinimumDelay + 1);
     NSLog(@"[XingLanSwipe] next local swipe in %u seconds", delay);
     xlTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
         dispatch_get_main_queue());
@@ -151,9 +192,16 @@ static void XLScheduleNext(void) {
     dispatch_resume(xlTimer);
 }
 
+static void XLScheduleNext(void) {
+    uint32_t delay = XLMinimumDelay +
+        arc4random_uniform(XLMaximumDelay - XLMinimumDelay + 1);
+    XLScheduleSwipeAfterDelay(delay);
+}
+
 static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification) {
     XLCancelBackTimer();
     if (!xlRunning) return;
+    xlNextBackCheckTime = CFAbsoluteTimeGetCurrent() + delay;
     NSLog(@"[XingLanSwipe] %@ system back check in %u seconds",
           quickVerification ? @"initial verification" : @"next", delay);
     xlBackTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
@@ -191,6 +239,8 @@ static void XLSetRunning(BOOL running) {
     } else {
         XLCancelTimer();
         XLCancelBackTimer();
+        xlActionBusy = NO;
+        xlLastGestureEndTime = 0.0;
         NSLog(@"[XingLanSwipe] stopped");
     }
     XLUpdateUI();
