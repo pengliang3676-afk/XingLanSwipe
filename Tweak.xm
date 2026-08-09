@@ -110,9 +110,13 @@ static BOOL XLVisibleViewTreeContainsProfileTab(UIView *view, UIWindow *window) 
 }
 
 static BOOL XLBaiduVisibleProfileTab(void) {
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        if (window.hidden || window.alpha < 0.01) continue;
-        if (XLVisibleViewTreeContainsProfileTab(window, window)) return YES;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] ||
+            scene.activationState == UISceneActivationStateUnattached) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.hidden || window.alpha < 0.01) continue;
+            if (XLVisibleViewTreeContainsProfileTab(window, window)) return YES;
+        }
     }
     return NO;
 }
@@ -159,7 +163,8 @@ static void XLRequestBaiduProfileCheck(BOOL quickVerification) {
     xlPendingProfileCheckToken = token;
     xlPendingProfileCheckQuick = quickVerification;
     CFPreferencesSetAppValue(CFSTR(XLProfileCheckRequestKey),
-        [NSNumber numberWithUnsignedInteger:token], CFSTR(XLPreferenceDomain));
+        (__bridge CFPropertyListRef)[NSNumber numberWithUnsignedInteger:token],
+        CFSTR(XLPreferenceDomain));
     CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
         CFSTR(XLProfileCheckNotification), NULL, NULL, YES);
@@ -331,7 +336,8 @@ static void XLProfileCheckResultCallback(CFNotificationCenterRef center, void *o
         CFSTR(XLProfileCheckResultRequestKey), CFSTR(XLPreferenceDomain));
     CFPropertyListRef visibleValue = CFPreferencesCopyAppValue(
         CFSTR(XLProfileCheckResultVisibleKey), CFSTR(XLPreferenceDomain));
-    NSUInteger token = [(id)requestValue unsignedIntegerValue];
+    NSUInteger token = requestValue ?
+        [(__bridge NSNumber *)requestValue unsignedIntegerValue] : 0;
     BOOL visible = (visibleValue && CFEqual(visibleValue, kCFBooleanTrue));
     if (requestValue) CFRelease(requestValue);
     if (visibleValue) CFRelease(visibleValue);
@@ -349,13 +355,15 @@ static void XLBaiduProfileCheckCallback(CFNotificationCenterRef center, void *ob
     dispatch_async(dispatch_get_main_queue(), ^{
         CFPropertyListRef requestValue = CFPreferencesCopyAppValue(
             CFSTR(XLProfileCheckRequestKey), CFSTR(XLPreferenceDomain));
-        NSUInteger token = [(id)requestValue unsignedIntegerValue];
+        NSUInteger token = requestValue ?
+            [(__bridge NSNumber *)requestValue unsignedIntegerValue] : 0;
         if (requestValue) CFRelease(requestValue);
         if (token == 0) return;
 
         BOOL visible = XLBaiduVisibleProfileTab();
         CFPreferencesSetAppValue(CFSTR(XLProfileCheckResultRequestKey),
-            [NSNumber numberWithUnsignedInteger:token], CFSTR(XLPreferenceDomain));
+            (__bridge CFPropertyListRef)[NSNumber numberWithUnsignedInteger:token],
+            CFSTR(XLPreferenceDomain));
         CFPreferencesSetAppValue(CFSTR(XLProfileCheckResultVisibleKey),
             visible ? kCFBooleanTrue : kCFBooleanFalse, CFSTR(XLPreferenceDomain));
         CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
