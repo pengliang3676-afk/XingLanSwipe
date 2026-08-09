@@ -83,13 +83,13 @@ static double XLBestTemplateCorrelation(const uint8_t *screen,
     double patternVariance = patternSquareSum - patternSum * patternSum / count;
     if (patternVariance <= 1.0) return 0.0;
 
-    size_t startX = (size_t)floor((double)screenWidth * 0.70);
-    size_t startY = (size_t)floor((double)screenHeight * 0.88);
+    size_t startX = (size_t)floor((double)screenWidth * 0.76);
+    size_t startY = (size_t)floor((double)screenHeight * 0.91);
     size_t endX = screenWidth - patternWidth;
     size_t endY = screenHeight - patternHeight;
     if (startX > endX || startY > endY) return 0.0;
 
-    size_t step = MAX((size_t)1, (size_t)floor((double)screenWidth / 750.0));
+    size_t step = MAX((size_t)1, (size_t)lround((double)screenWidth / 375.0));
     double best = -1.0;
     for (size_t y = startY; y <= endY; y += step) {
         for (size_t x = startX; x <= endX; x += step) {
@@ -154,29 +154,49 @@ static double XLBestTemplateCorrelation(const uint8_t *screen,
     size_t screenWidth = CGImageGetWidth(screenImage);
     size_t screenHeight = CGImageGetHeight(screenImage);
     double scale = (double)screenWidth / 750.0;
-    size_t templateWidth = MAX((size_t)24,
-        (size_t)lround((double)CGImageGetWidth(templateImage.CGImage) * scale));
-    size_t templateHeight = MAX((size_t)12,
-        (size_t)lround((double)CGImageGetHeight(templateImage.CGImage) * scale));
-
     uint8_t *screenPixels = XLCreateGrayscalePixels(
         screenImage, screenWidth, screenHeight);
-    uint8_t *templatePixels = XLCreateGrayscalePixels(
-        templateImage.CGImage, templateWidth, templateHeight);
     CGImageRelease(screenImage);
-    if (!screenPixels || !templatePixels) {
+    if (!screenPixels) {
         free(screenPixels);
-        free(templatePixels);
         XLSetDetectorError(error, 5, @"could not prepare images for matching");
         return -1.0;
     }
 
-    double score = XLBestTemplateCorrelation(screenPixels, screenWidth, screenHeight,
-                                             templatePixels, templateWidth, templateHeight);
+    // The app can render its tab text at slightly different effective sizes on
+    // different display modes. Search several nearby scales instead of
+    // requiring one pixel-exact size.
+    static const double scaleAdjustments[] = {0.84, 0.92, 1.00, 1.08, 1.16};
+    double score = 0.0;
+    size_t bestWidth = 0;
+    size_t bestHeight = 0;
+    for (size_t index = 0;
+         index < sizeof(scaleAdjustments) / sizeof(scaleAdjustments[0]);
+         index++) {
+        double candidateScale = scale * scaleAdjustments[index];
+        size_t templateWidth = MAX((size_t)24,
+            (size_t)lround((double)CGImageGetWidth(templateImage.CGImage) *
+                           candidateScale));
+        size_t templateHeight = MAX((size_t)12,
+            (size_t)lround((double)CGImageGetHeight(templateImage.CGImage) *
+                           candidateScale));
+        uint8_t *templatePixels = XLCreateGrayscalePixels(
+            templateImage.CGImage, templateWidth, templateHeight);
+        if (!templatePixels) continue;
+        double candidateScore = XLBestTemplateCorrelation(
+            screenPixels, screenWidth, screenHeight,
+            templatePixels, templateWidth, templateHeight);
+        free(templatePixels);
+        if (candidateScore > score) {
+            score = candidateScore;
+            bestWidth = templateWidth;
+            bestHeight = templateHeight;
+        }
+    }
     free(screenPixels);
-    free(templatePixels);
-    NSLog(@"[XingLanSwipe] embedded profile template score %.4f at %zux%zu",
-          score, screenWidth, screenHeight);
+    NSLog(@"[XingLanSwipe] embedded profile template score %.4f at %zux%zu "
+           "using %zux%zu template",
+          score, screenWidth, screenHeight, bestWidth, bestHeight);
     return score;
 }
 
