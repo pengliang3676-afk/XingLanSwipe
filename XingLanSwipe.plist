@@ -3,6 +3,8 @@
         Executables = (
             "SpringBoard"
         );
+        Bundles = (
+            "com.baidu.BaiduMobileInfo"
+        );
     };
 }
-

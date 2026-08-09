@@ -4,9 +4,9 @@ TARGET = iphone:clang:latest:15.0
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = XingLanSwipe
-XingLanSwipe_FILES = Tweak.xm XLHIDSender.m XLBackIconDetector.m
+XingLanSwipe_FILES = Tweak.xm XLHIDSender.m
 XingLanSwipe_CFLAGS = -fobjc-arc -Wall -Wextra
-XingLanSwipe_FRAMEWORKS = UIKit Foundation IOKit Vision
+XingLanSwipe_FRAMEWORKS = UIKit Foundation IOKit
 
 BUNDLE_NAME = XingLanSwipeModule
 XingLanSwipeModule_FILES = ControlCenterModule/XingLanSwipeModule.m
