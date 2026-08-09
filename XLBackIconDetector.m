@@ -13,9 +13,9 @@ typedef struct {
 } XLGrayImage;
 
 static NSString *const XLDetectorErrorDomain = @"com.jibeib.xinglanswipe.detector";
-static const CGFloat XLTemplateReferenceScreenWidth = 525.0;
-static const CGFloat XLTemplateReferenceWidth = 38.0;
-static const CGFloat XLTemplateReferenceHeight = 34.0;
+static const CGFloat XLTemplateReferenceScreenWidth = 750.0;
+static const CGFloat XLTemplateReferenceWidth = 86.0;
+static const CGFloat XLTemplateReferenceHeight = 40.0;
 
 static void XLSetDetectorError(NSError **error, NSInteger code, NSString *message) {
     if (!error) return;
@@ -116,8 +116,8 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
 - (UIImage *)templateImageWithError:(NSError **)error {
     if (_templateImage) return _templateImage;
     NSArray<NSString *> *paths = @[
-        @"/var/jb/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/return_chevron.png",
-        @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/return_chevron.png"
+        @"/var/jb/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png",
+        @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png"
     ];
     for (NSString *path in paths) {
         UIImage *image = [UIImage imageWithContentsOfFile:path];
@@ -126,7 +126,7 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
             return image;
         }
     }
-    XLSetDetectorError(error, 3, @"return chevron template unavailable");
+    XLSetDetectorError(error, 3, @"profile tab template unavailable");
     return nil;
 }
 
@@ -158,9 +158,9 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
         return -1.0;
     }
 
-    size_t minX = 0;
-    size_t maxX = MIN(screenWidth - templateWidth, (size_t)llround(screenWidth * 0.20));
-    size_t minY = MIN(screenHeight - templateHeight, (size_t)llround(screenHeight * 0.88));
+    size_t minX = MIN(screenWidth - templateWidth, (size_t)llround(screenWidth * 0.80));
+    size_t maxX = screenWidth - templateWidth;
+    size_t minY = MIN(screenHeight - templateHeight, (size_t)llround(screenHeight * 0.94));
     size_t maxY = screenHeight - templateHeight;
     double bestScore = -1.0;
     for (size_t y = minY; y <= maxY; y++) {

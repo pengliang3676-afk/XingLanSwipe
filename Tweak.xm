@@ -101,7 +101,7 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
     NSError *captureError = nil;
     UIImage *screenshot = [xlBackIconDetector captureScreenWithError:&captureError];
     if (!screenshot) {
-        NSLog(@"[XingLanSwipe] back icon check skipped: %@",
+        NSLog(@"[XingLanSwipe] profile tab check skipped: %@",
               captureError.localizedDescription ?: @"screenshot unavailable");
         if (quickVerification) XLShowStatusText(@"图×", 2.0);
         XLScheduleNextBackSwipe();
@@ -117,12 +117,12 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!xlRunning || generation != xlRunGeneration) return;
                 if (score < XLBackIconConfidenceThreshold) {
-                    NSLog(@"[XingLanSwipe] back icon absent (score %.4f); skipped", score);
-                    if (quickVerification) XLShowStatusText(@"无←", 2.0);
+                    NSLog(@"[XingLanSwipe] profile tab marker absent (score %.4f); skipped", score);
+                    if (quickVerification) XLShowStatusText(@"无我", 2.0);
                     XLScheduleNextBackSwipe();
                     return;
                 }
-                NSLog(@"[XingLanSwipe] back icon matched (score %.4f); returning", score);
+                NSLog(@"[XingLanSwipe] profile tab marker matched (score %.4f); returning", score);
                 XLDispatchBackSwipe(quickVerification);
             });
         }
