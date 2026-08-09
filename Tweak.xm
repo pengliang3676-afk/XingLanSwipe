@@ -1,9 +1,8 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
-#import <Vision/Vision.h>
-#import <QuartzCore/QuartzCore.h>
 #import <notify.h>
 #import "XLHIDSender.h"
+#import "XLBackIconDetector.h"
 #import "XingLanSwipeShared.h"
 
 static const uint32_t XLMinimumDelay = 180;
@@ -15,16 +14,10 @@ static const uint32_t XLInitialBackVerificationDelay = 10;
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
 static XLHIDSender *xlSender;
+static XLBackIconDetector *xlBackIconDetector;
+static dispatch_queue_t xlImageMatchQueue;
 static BOOL xlRunning = NO;
 static NSUInteger xlRunGeneration = 0;
-static NSUInteger xlProfileCheckToken = 0;
-static NSUInteger xlPendingProfileCheckToken = 0;
-static BOOL xlPendingProfileCheckQuick = NO;
-static int xlProfileRequestPostToken = NOTIFY_TOKEN_INVALID;
-static int xlProfileRequestObserverToken = NOTIFY_TOKEN_INVALID;
-static int xlProfileResultPostToken = NOTIFY_TOKEN_INVALID;
-static int xlProfileResultObserverToken = NOTIFY_TOKEN_INVALID;
-static dispatch_queue_t xlBaiduVisionQueue;
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 
@@ -78,139 +71,6 @@ static void XLScheduleNext(void);
 static void XLScheduleNextBackSwipe(void);
 static void XLPerformBackSwipe(BOOL quickVerification);
 
-static BOOL XLExactProfileTabText(NSString *text) {
-    if (![text isKindOfClass:NSString.class]) return NO;
-    NSString *normalized = [text stringByTrimmingCharactersInSet:
-        NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    normalized = [normalized stringByReplacingOccurrencesOfString:@" " withString:@""];
-    return [normalized isEqualToString:@"我的"];
-}
-
-static BOOL XLTextContainsProfileTab(NSString *text) {
-    if (![text isKindOfClass:NSString.class]) return NO;
-    NSString *normalized = [text stringByTrimmingCharactersInSet:
-        NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    normalized = [normalized stringByReplacingOccurrencesOfString:@" " withString:@""];
-    normalized = [normalized stringByReplacingOccurrencesOfString:@"\n" withString:@""];
-    return [normalized containsString:@"我的"];
-}
-
-static BOOL XLViewIsInBottomRight(UIView *view, UIWindow *window) {
-    if (!view || !window || CGRectIsEmpty(view.bounds)) return NO;
-    CGRect frame = [view convertRect:view.bounds toView:window];
-    CGRect visible = CGRectIntersection(frame, window.bounds);
-    if (CGRectIsEmpty(visible)) return NO;
-    CGPoint center = CGPointMake(CGRectGetMidX(visible), CGRectGetMidY(visible));
-    return center.x >= CGRectGetWidth(window.bounds) * 0.62 &&
-           center.y >= CGRectGetHeight(window.bounds) * 0.72;
-}
-
-static BOOL XLVisibleViewTreeContainsProfileTab(UIView *view, UIWindow *window) {
-    if (!view || view.hidden || view.alpha < 0.01) return NO;
-
-    BOOL isProfileTab = NO;
-    if ([view isKindOfClass:UILabel.class]) {
-        isProfileTab = XLExactProfileTabText(((UILabel *)view).text);
-    } else if ([view isKindOfClass:UITextView.class]) {
-        isProfileTab = XLExactProfileTabText(((UITextView *)view).text);
-    } else if ([view isKindOfClass:UIButton.class]) {
-        isProfileTab = XLExactProfileTabText(((UIButton *)view).currentTitle);
-    }
-    if (!isProfileTab) isProfileTab = XLExactProfileTabText(view.accessibilityLabel);
-    if (isProfileTab && XLViewIsInBottomRight(view, window)) return YES;
-
-    for (UIView *subview in view.subviews) {
-        if (XLVisibleViewTreeContainsProfileTab(subview, window)) return YES;
-    }
-    return NO;
-}
-
-static BOOL XLBaiduVisibleProfileTab(void) {
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class] ||
-            scene.activationState == UISceneActivationStateUnattached) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.hidden || window.alpha < 0.01) continue;
-            if (XLVisibleViewTreeContainsProfileTab(window, window)) return YES;
-        }
-    }
-    return NO;
-}
-
-static UIWindow *XLBaiduActiveWindow(void) {
-    UIWindow *fallback = nil;
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class] ||
-            scene.activationState != UISceneActivationStateForegroundActive) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.hidden || window.alpha < 0.01) continue;
-            if (window.isKeyWindow) return window;
-            if (!fallback) fallback = window;
-        }
-    }
-    return fallback;
-}
-
-static UIImage *XLBaiduBottomRightSnapshot(UIWindow *window) {
-    if (!window || CGRectIsEmpty(window.bounds)) return nil;
-
-    CGRect bounds = window.bounds;
-    CGRect crop = CGRectMake(CGRectGetWidth(bounds) * 0.72,
-                             CGRectGetHeight(bounds) * 0.78,
-                             CGRectGetWidth(bounds) * 0.28,
-                             CGRectGetHeight(bounds) * 0.22);
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
-    format.opaque = YES;
-    format.scale = MIN(UIScreen.mainScreen.scale * 2.0, 6.0);
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
-        initWithSize:crop.size format:format];
-    __block BOOL complete = NO;
-    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        CGContextRef cgContext = context.CGContext;
-        CGContextSaveGState(cgContext);
-        CGContextTranslateCTM(cgContext, -CGRectGetMinX(crop), -CGRectGetMinY(crop));
-        complete = [window drawViewHierarchyInRect:bounds afterScreenUpdates:NO];
-        CGContextRestoreGState(cgContext);
-    }];
-    if (complete && image.CGImage) return image;
-
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        CGContextRef cgContext = context.CGContext;
-        CGContextSaveGState(cgContext);
-        CGContextTranslateCTM(cgContext, -CGRectGetMinX(crop), -CGRectGetMinY(crop));
-        [window.layer renderInContext:cgContext];
-        CGContextRestoreGState(cgContext);
-    }];
-}
-
-static uint8_t XLBaiduVisionResultForImage(UIImage *image) {
-    if (!image.CGImage) return XLProfileResultCaptureError;
-
-    VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
-    request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-    request.recognitionLanguages = @[@"zh-Hans"];
-    request.usesLanguageCorrection = NO;
-    request.minimumTextHeight = 0.025;
-
-    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc]
-        initWithCGImage:image.CGImage options:@{}];
-    NSError *error = nil;
-    if (![handler performRequests:@[request] error:&error]) {
-        NSLog(@"[XingLanSwipe] Baidu local OCR failed: %@", error.localizedDescription);
-        return XLProfileResultVisionError;
-    }
-
-    for (VNRecognizedTextObservation *observation in request.results) {
-        for (VNRecognizedText *candidate in [observation topCandidates:5]) {
-            if (XLTextContainsProfileTab(candidate.string)) {
-                NSLog(@"[XingLanSwipe] Baidu local OCR matched: %@", candidate.string);
-                return XLProfileResultVisionText;
-            }
-        }
-    }
-    return XLProfileResultNoMatch;
-}
-
 static void XLPerformSwipe(void) {
     XLCancelTimer();
     if (!xlRunning) return;
@@ -232,60 +92,47 @@ static void XLDispatchBackSwipe(BOOL quickVerification) {
     }];
 }
 
-static void XLFinishProfileCheck(uint8_t result, BOOL quickVerification) {
-    xlPendingProfileCheckToken = 0;
+static void XLPerformBackSwipe(BOOL quickVerification) {
+    XLCancelBackTimer();
     if (!xlRunning) return;
+    if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
 
-    if (result == XLProfileResultNoMatch) {
-        NSLog(@"[XingLanSwipe] Baidu profile tab text not found; skipped back swipe");
-        if (quickVerification) XLShowStatusText(@"无我", 3.0);
-        XLScheduleNextBackSwipe();
-        return;
-    }
-    if (result == XLProfileResultCaptureError) {
-        NSLog(@"[XingLanSwipe] Baidu app snapshot failed; skipped back swipe");
+    NSError *captureError = nil;
+    UIImage *screenshot = [xlBackIconDetector captureScreenWithError:&captureError];
+    if (!screenshot) {
+        NSLog(@"[XingLanSwipe] screen check skipped: %@",
+              captureError.localizedDescription ?: @"screenshot unavailable");
         if (quickVerification) XLShowStatusText(@"图错", 3.0);
         XLScheduleNextBackSwipe();
         return;
     }
-    if (result == XLProfileResultVisionError) {
-        NSLog(@"[XingLanSwipe] Baidu local OCR failed; skipped back swipe");
-        if (quickVerification) XLShowStatusText(@"识错", 3.0);
-        XLScheduleNextBackSwipe();
-        return;
-    }
-
-    NSLog(@"[XingLanSwipe] Baidu profile tab matched by %@; performing back swipe",
-          result == XLProfileResultViewText ? @"view text" : @"local OCR");
-    XLDispatchBackSwipe(quickVerification);
-}
-
-static void XLRequestBaiduProfileCheck(BOOL quickVerification) {
-    XLCancelBackTimer();
-    if (!xlRunning) return;
-
-    NSUInteger token = ++xlProfileCheckToken;
-    xlPendingProfileCheckToken = token;
-    xlPendingProfileCheckQuick = quickVerification;
-    if (xlProfileRequestPostToken != NOTIFY_TOKEN_INVALID) {
-        notify_set_state(xlProfileRequestPostToken, (uint64_t)token);
-        notify_post(XLProfileCheckNotification);
-    }
 
     NSUInteger generation = xlRunGeneration;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC),
-                   dispatch_get_main_queue(), ^{
-        if (!xlRunning || generation != xlRunGeneration ||
-            xlPendingProfileCheckToken != token) return;
-        xlPendingProfileCheckToken = 0;
-        NSLog(@"[XingLanSwipe] Baidu process did not answer; skipped back swipe");
-        if (quickVerification) XLShowStatusText(@"未进", 3.0);
-        XLScheduleNextBackSwipe();
+    dispatch_async(xlImageMatchQueue, ^{
+        @autoreleasepool {
+            NSError *matchError = nil;
+            double score = [xlBackIconDetector matchScoreForScreenshot:screenshot
+                                                                  error:&matchError];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!xlRunning || generation != xlRunGeneration) return;
+                if (matchError) {
+                    NSLog(@"[XingLanSwipe] screen template match failed: %@",
+                          matchError.localizedDescription);
+                    if (quickVerification) XLShowStatusText(@"模错", 3.0);
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
+                if (score < 0.68) {
+                    NSLog(@"[XingLanSwipe] profile template absent (score %.4f); skipped", score);
+                    if (quickVerification) XLShowStatusText(@"无我", 3.0);
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
+                NSLog(@"[XingLanSwipe] profile template matched (score %.4f); returning", score);
+                XLDispatchBackSwipe(quickVerification);
+            });
+        }
     });
-}
-
-static void XLPerformBackSwipe(BOOL quickVerification) {
-    XLRequestBaiduProfileCheck(quickVerification);
 }
 
 static void XLScheduleNext(void) {
@@ -336,7 +183,6 @@ static void XLSetRunning(BOOL running) {
 
     xlRunning = running;
     xlRunGeneration++;
-    xlPendingProfileCheckToken = 0;
     if (xlRunning) {
         XLScheduleNext();
         XLScheduleBackSwipeAfterDelay(XLInitialBackVerificationDelay, YES);
@@ -433,72 +279,16 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
     dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
 }
 
-static void XLHandleProfileCheckResult(int notificationToken) {
-    uint64_t payload = 0;
-    if (notify_get_state(notificationToken, &payload) != NOTIFY_STATUS_OK) return;
-    NSUInteger token = (NSUInteger)(payload >> 8);
-    uint8_t result = (uint8_t)(payload & 0xff);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!xlRunning || token == 0 || token != xlPendingProfileCheckToken) return;
-        XLFinishProfileCheck(result, xlPendingProfileCheckQuick);
-    });
-}
-
-static void XLBaiduSendProfileResult(NSUInteger requestToken, uint8_t result) {
-    if (requestToken == 0 || xlProfileResultPostToken == NOTIFY_TOKEN_INVALID) return;
-    uint64_t payload = ((uint64_t)requestToken << 8) | (uint64_t)result;
-    notify_set_state(xlProfileResultPostToken, payload);
-    notify_post(XLProfileCheckResultNotification);
-}
-
-static void XLBaiduHandleProfileCheck(int notificationToken) {
-    uint64_t requestState = 0;
-    if (notify_get_state(notificationToken, &requestState) != NOTIFY_STATUS_OK ||
-        requestState == 0) return;
-    NSUInteger requestToken = (NSUInteger)requestState;
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (XLBaiduVisibleProfileTab()) {
-            XLBaiduSendProfileResult(requestToken, XLProfileResultViewText);
-            return;
-        }
-
-        UIWindow *window = XLBaiduActiveWindow();
-        UIImage *snapshot = XLBaiduBottomRightSnapshot(window);
-        if (!snapshot.CGImage) {
-            XLBaiduSendProfileResult(requestToken, XLProfileResultCaptureError);
-            return;
-        }
-
-        dispatch_async(xlBaiduVisionQueue, ^{
-            @autoreleasepool {
-                uint8_t result = XLBaiduVisionResultForImage(snapshot);
-                XLBaiduSendProfileResult(requestToken, result);
-            }
-        });
-    });
-}
-
 __attribute__((constructor))
 static void XingLanSwipeInit(void) {
     @autoreleasepool {
         NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
-        if ([bundleIdentifier isEqualToString:@"com.baidu.BaiduMobileInfo"]) {
-            xlBaiduVisionQueue = dispatch_queue_create(
-                "com.jibeib.xinglanswipe.baidu-vision", DISPATCH_QUEUE_SERIAL);
-            notify_register_check(XLProfileCheckResultNotification,
-                                  &xlProfileResultPostToken);
-            notify_register_dispatch(XLProfileCheckNotification,
-                                     &xlProfileRequestObserverToken,
-                                     dispatch_get_main_queue(), ^(int token) {
-                XLBaiduHandleProfileCheck(token);
-            });
-            NSLog(@"[XingLanSwipe] Baidu profile detector loaded");
-            return;
-        }
         if (![bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         dispatch_async(dispatch_get_main_queue(), ^{
             xlSender = [XLHIDSender new];
+            xlBackIconDetector = [XLBackIconDetector new];
+            xlImageMatchQueue = dispatch_queue_create(
+                "com.jibeib.xinglanswipe.image-match", DISPATCH_QUEUE_SERIAL);
             XLInstallStatusOverlay();
             XLSetRunning(NO);
             CFNotificationCenterAddObserver(
@@ -511,13 +301,6 @@ static void XingLanSwipeInit(void) {
                 NULL, XLControlCenterStateCallback,
                 CFSTR(XLControlCenterStateNotification),
                 NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-            notify_register_check(XLProfileCheckNotification,
-                                  &xlProfileRequestPostToken);
-            notify_register_dispatch(XLProfileCheckResultNotification,
-                                     &xlProfileResultObserverToken,
-                                     dispatch_get_main_queue(), ^(int token) {
-                XLHandleProfileCheckResult(token);
-            });
             NSLog(@"[XingLanSwipe] loaded; add the module in Control Center settings");
         });
     }
