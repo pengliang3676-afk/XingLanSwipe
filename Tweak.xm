@@ -9,6 +9,7 @@ static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
+static const uint32_t XLInitialBackVerificationDelay = 10;
 static const double XLBackIconConfidenceThreshold = 0.90;
 
 static dispatch_source_t xlTimer;
@@ -39,6 +40,20 @@ static void XLUpdateUI(void) {
     }
 }
 
+static void XLShowStatusText(NSString *text, NSTimeInterval duration) {
+    UILabel *status = xlHomeStatusLabel;
+    if (!status || !xlRunning) return;
+
+    status.hidden = NO;
+    status.text = text;
+    NSUInteger generation = xlRunGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(duration * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (xlRunning && generation == xlRunGeneration) XLUpdateUI();
+    });
+}
+
 static void XLCancelTimer(void) {
     if (xlTimer) {
         dispatch_source_cancel(xlTimer);
@@ -55,6 +70,7 @@ static void XLCancelBackTimer(void) {
 
 static void XLScheduleNext(void);
 static void XLScheduleNextBackSwipe(void);
+static void XLPerformBackSwipe(BOOL quickVerification);
 
 static void XLPerformSwipe(void) {
     XLCancelTimer();
@@ -66,15 +82,18 @@ static void XLPerformSwipe(void) {
     }];
 }
 
-static void XLDispatchBackSwipe(void) {
+static void XLDispatchBackSwipe(BOOL quickVerification) {
     if (!xlSender) xlSender = [XLHIDSender new];
     [xlSender performSystemBackSwipeWithCompletion:^(BOOL success) {
         NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
+        if (quickVerification && xlRunning) {
+            XLShowStatusText(success ? @"回✓" : @"回×", 2.0);
+        }
         if (xlRunning) XLScheduleNextBackSwipe();
     }];
 }
 
-static void XLPerformBackSwipe(void) {
+static void XLPerformBackSwipe(BOOL quickVerification) {
     XLCancelBackTimer();
     if (!xlRunning) return;
     if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
@@ -84,6 +103,7 @@ static void XLPerformBackSwipe(void) {
     if (!screenshot) {
         NSLog(@"[XingLanSwipe] back icon check skipped: %@",
               captureError.localizedDescription ?: @"screenshot unavailable");
+        if (quickVerification) XLShowStatusText(@"图×", 2.0);
         XLScheduleNextBackSwipe();
         return;
     }
@@ -98,11 +118,12 @@ static void XLPerformBackSwipe(void) {
                 if (!xlRunning || generation != xlRunGeneration) return;
                 if (score < XLBackIconConfidenceThreshold) {
                     NSLog(@"[XingLanSwipe] back icon absent (score %.4f); skipped", score);
+                    if (quickVerification) XLShowStatusText(@"无←", 2.0);
                     XLScheduleNextBackSwipe();
                     return;
                 }
                 NSLog(@"[XingLanSwipe] back icon matched (score %.4f); returning", score);
-                XLDispatchBackSwipe();
+                XLDispatchBackSwipe(quickVerification);
             });
         }
     });
@@ -123,19 +144,24 @@ static void XLScheduleNext(void) {
     dispatch_resume(xlTimer);
 }
 
-static void XLScheduleNextBackSwipe(void) {
+static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification) {
     XLCancelBackTimer();
     if (!xlRunning) return;
-    uint32_t delay = XLBackMinimumDelay +
-        arc4random_uniform(XLBackMaximumDelay - XLBackMinimumDelay + 1);
-    NSLog(@"[XingLanSwipe] next system back swipe in %u seconds", delay);
+    NSLog(@"[XingLanSwipe] %@ system back check in %u seconds",
+          quickVerification ? @"initial verification" : @"next", delay);
     xlBackTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
         dispatch_get_main_queue());
     dispatch_source_set_timer(xlBackTimer,
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
         DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
-    dispatch_source_set_event_handler(xlBackTimer, ^{ XLPerformBackSwipe(); });
+    dispatch_source_set_event_handler(xlBackTimer, ^{ XLPerformBackSwipe(quickVerification); });
     dispatch_resume(xlBackTimer);
+}
+
+static void XLScheduleNextBackSwipe(void) {
+    uint32_t delay = XLBackMinimumDelay +
+        arc4random_uniform(XLBackMaximumDelay - XLBackMinimumDelay + 1);
+    XLScheduleBackSwipeAfterDelay(delay, NO);
 }
 
 static void XLSetRunning(BOOL running) {
@@ -153,7 +179,7 @@ static void XLSetRunning(BOOL running) {
     xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
-        XLScheduleNextBackSwipe();
+        XLScheduleBackSwipeAfterDelay(XLInitialBackVerificationDelay, YES);
         NSLog(@"[XingLanSwipe] started from Control Center");
     } else {
         XLCancelTimer();
