@@ -116,9 +116,19 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
                                                                   error:&matchError];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!xlRunning || generation != xlRunGeneration) return;
+                if (matchError) {
+                    NSLog(@"[XingLanSwipe] profile tab check failed: %@",
+                          matchError.localizedDescription);
+                    if (quickVerification) XLShowStatusText(@"图×", 4.0);
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
                 if (score < XLBackIconConfidenceThreshold) {
                     NSLog(@"[XingLanSwipe] profile tab marker absent (score %.4f); skipped", score);
-                    if (quickVerification) XLShowStatusText(@"无我", 2.0);
+                    if (quickVerification) {
+                        NSInteger percent = (NSInteger)llround(MAX(0.0, score) * 100.0);
+                        XLShowStatusText([NSString stringWithFormat:@"%ld", (long)percent], 4.0);
+                    }
                     XLScheduleNextBackSwipe();
                     return;
                 }
