@@ -2,17 +2,22 @@
 #import <Foundation/Foundation.h>
 #import <notify.h>
 #import "XLHIDSender.h"
+#import "XLBackIconDetector.h"
 #import "XingLanSwipeShared.h"
 
 static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
+static const double XLBackIconConfidenceThreshold = 0.90;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
 static XLHIDSender *xlSender;
+static XLBackIconDetector *xlBackIconDetector;
+static dispatch_queue_t xlVisionQueue;
 static BOOL xlRunning = NO;
+static NSUInteger xlRunGeneration = 0;
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 
@@ -61,14 +66,46 @@ static void XLPerformSwipe(void) {
     }];
 }
 
-static void XLPerformBackSwipe(void) {
-    XLCancelBackTimer();
-    if (!xlRunning) return;
+static void XLDispatchBackSwipe(void) {
     if (!xlSender) xlSender = [XLHIDSender new];
     [xlSender performSystemBackSwipeWithCompletion:^(BOOL success) {
         NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
         if (xlRunning) XLScheduleNextBackSwipe();
     }];
+}
+
+static void XLPerformBackSwipe(void) {
+    XLCancelBackTimer();
+    if (!xlRunning) return;
+    if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
+
+    NSError *captureError = nil;
+    UIImage *screenshot = [xlBackIconDetector captureScreenWithError:&captureError];
+    if (!screenshot) {
+        NSLog(@"[XingLanSwipe] back icon check skipped: %@",
+              captureError.localizedDescription ?: @"screenshot unavailable");
+        XLScheduleNextBackSwipe();
+        return;
+    }
+
+    NSUInteger generation = xlRunGeneration;
+    dispatch_async(xlVisionQueue, ^{
+        @autoreleasepool {
+            NSError *matchError = nil;
+            double score = [xlBackIconDetector matchScoreForScreenshot:screenshot
+                                                                  error:&matchError];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!xlRunning || generation != xlRunGeneration) return;
+                if (score < XLBackIconConfidenceThreshold) {
+                    NSLog(@"[XingLanSwipe] back icon absent (score %.4f); skipped", score);
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
+                NSLog(@"[XingLanSwipe] back icon matched (score %.4f); returning", score);
+                XLDispatchBackSwipe();
+            });
+        }
+    });
 }
 
 static void XLScheduleNext(void) {
@@ -113,6 +150,7 @@ static void XLSetRunning(BOOL running) {
     }
 
     xlRunning = running;
+    xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
         XLScheduleNextBackSwipe();
@@ -214,6 +252,9 @@ static void XingLanSwipeInit(void) {
     @autoreleasepool {
         dispatch_async(dispatch_get_main_queue(), ^{
             xlSender = [XLHIDSender new];
+            xlBackIconDetector = [XLBackIconDetector new];
+            xlVisionQueue = dispatch_queue_create("com.jibeib.xinglanswipe.vision",
+                                                   DISPATCH_QUEUE_SERIAL);
             XLInstallStatusOverlay();
             XLSetRunning(NO);
             CFNotificationCenterAddObserver(
