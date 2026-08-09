@@ -136,7 +136,9 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
 
     size_t sourceWidth = CGImageGetWidth(screenshot.CGImage);
     size_t sourceHeight = CGImageGetHeight(screenshot.CGImage);
-    CGFloat scale = MIN(1.0, 420.0 / (CGFloat)sourceWidth);
+    // Keep the original capture pixels: the small bottom-tab characters lose their
+    // distinguishing strokes when the screenshot is downsampled first.
+    CGFloat scale = 1.0;
     size_t screenWidth = MAX((size_t)1, (size_t)llround(sourceWidth * scale));
     size_t screenHeight = MAX((size_t)1, (size_t)llround(sourceHeight * scale));
     size_t nominalTemplateWidth = MAX((size_t)8, (size_t)llround(
@@ -156,7 +158,7 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
     }
 
     double bestScore = -1.0;
-    static const CGFloat scaleCandidates[] = {0.78, 0.89, 1.00, 1.11, 1.22};
+    static const CGFloat scaleCandidates[] = {0.90, 1.00, 1.10};
     for (size_t candidate = 0; candidate < sizeof(scaleCandidates) / sizeof(scaleCandidates[0]);
          candidate++) {
         size_t templateWidth = MAX((size_t)8, (size_t)llround(
@@ -170,9 +172,9 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
                                &templateImage)) {
             continue;
         }
-        size_t minX = MIN(screenWidth - templateWidth, (size_t)llround(screenWidth * 0.78));
+        size_t minX = MIN(screenWidth - templateWidth, (size_t)llround(screenWidth * 0.82));
         size_t maxX = screenWidth - templateWidth;
-        size_t minY = MIN(screenHeight - templateHeight, (size_t)llround(screenHeight * 0.92));
+        size_t minY = MIN(screenHeight - templateHeight, (size_t)llround(screenHeight * 0.94));
         size_t maxY = screenHeight - templateHeight;
         for (size_t y = minY; y <= maxY; y++) {
             for (size_t x = minX; x <= maxX; x++) {

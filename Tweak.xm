@@ -10,7 +10,7 @@ static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
 static const uint32_t XLInitialBackVerificationDelay = 10;
-static const double XLBackIconConfidenceThreshold = 0.72;
+static const double XLBackIconConfidenceThreshold = 0.70;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
