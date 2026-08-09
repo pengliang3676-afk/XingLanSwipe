@@ -1,6 +1,6 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 1.7.5
+Version: 1.7.6
 Architecture: iphoneos-arm64
 Description: 控制中心按钮启动、桌面状态提示的手机本地随机自动上滑插件。
 Maintainer: XingLan

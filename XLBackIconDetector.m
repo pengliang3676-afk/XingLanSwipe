@@ -7,6 +7,12 @@ typedef UIImage *(*XLCreateScreenImageFn)(void);
 
 static NSString *const XLDetectorErrorDomain = @"com.jibeib.xinglanswipe.detector";
 
+// A compact grayscale reference of the complete Baidu bottom navigation bar,
+// taken from the user's confirmed device screenshot. Matching the full bar is
+// much more reliable than matching the tiny two-character label alone.
+static NSString *const XLEmbeddedBottomBarTemplate =
+@"iVBORw0KGgoAAAANSUhEUgAAAI8AAAAXCAAAAAAXPUNhAAAEAklEQVR42s1VS2xbVRCduff9/I9REjshbpyfmkRJSUAIwQZRSgWtlLYEqQSJFWxZsGUNaxbACokVCCSkUJCoACG1kSK6QXVZkIoqaUqxE8eNU3/yPn7vftjAwva7b527Ppo598w5M3i6LqHrEe6aHUsTEPqIi2kJ6LcToHzSRgQAHtekCkI6HgWQIkF7IFof0o69Mnd/w7ZC66Az/cacANr6/iZVtEKhXchIAPRuNVWEiFN4FhHA3nT1bggddLuh3lNv0ZvTrzmVsH7oFz9awLhlPPGSWzKl4utruW3Pdpv55RKqRD6ztnfo2MdjZ7ccGqUPeisL63fx3sylyXW9vx/yK9m6GZjcYZc39w0ZSjmX+cwnxNVuvD991wrlzFIr35QsRPhp9dIXejfVbmSQm/10K2Gldj6ZHPX7fye1ET9Wfu9j2wzSAzz89yLOIW2y5+aQJ0UoBP3i4R9vLhla9t3fh9I8gg+K1J5tuOgSdqAYB2j16s8fBoQLpZ0pG3j75TXgRAFBmf7nhYur1uhsFR/3WIz0FtOD2TPNmUVfYUUEiR6doABSnS+t1l79fNtQMgYRL934pTGev36kYXS+UBB/5SL8QMOLSYHB2LnFC74gVB141K796KYaELES5Lob3xC56R2HRPEhdka7s/vkQd1K8bBGbHvJHviAOTJWr+lSNQ4WWKPVRiBRyYc6hfODD2+9On97qNwVC61XaX/1DumMF0/7YfGR+ncLcz4nSeRfHSTCJcRAyyw9E5hbGzpXiKM/ePHqfOlXfTz97dTiTpdRsXs/I7cuD3lEGM1r7TAHYZBanQwkYddLhkoe9nqxsfnX2Nmhw68VEUR/Yvm3h0aQu2IUvvwzig+A5yEYgstYeL6w0/E1nQmZVPEBCcl9SHveSIdRFWfPtwyQ/tjz92931+nlg2MotX09CXYrfLUOO1OPqiOQqVeI0hzJWOyBMdjq+Mp8pYjktoWCOz13qe9enFrKs9q5wnCsjGGzyF4tLmXoO/J8bVfhZwxmYoNk7+nxXKNNVY7PLi9OoVeYP1UPMDJfx6TSbts+kU2JIf1I4PBqG/bpESEKOiIxumseDTIuE7pyR3lNqBwn840sFTRyH6L5aE/GKgeNmgwrxtMD9yaqTtaIdxS9JHHLru0d12XF4soFRbTWCCWiJTokcl7I8sW8Z5v5mH8U5g96DAmWccv240ZFOQxreNI8LOwmWU1TRbBo+F4N/87GnFZ3mb58oUYDRoUwmOJ8gWeCbzqW+n5JA4GRjsmU+1ACEAmMMto7oD4+IABRIqiWqwQigAgiMOIagCQyEvGfkv0W7VeUAAACqIohSASJMqoZAkI04n/a/d0lnKinNemJ4kNOljzwL/Y31mCpET2lAAAAAElFTkSuQmCC";
+
 static void XLSetDetectorError(NSError **error, NSInteger code, NSString *message) {
     if (!error) return;
     *error = [NSError errorWithDomain:XLDetectorErrorDomain code:code
@@ -26,13 +32,9 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
     return function;
 }
 
-static NSString *const XLEmbeddedProfileTemplate =
-@"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";
-
 static CGImageRef XLCreateUprightImage(UIImage *sourceImage) {
     if (!sourceImage.CGImage || sourceImage.size.width <= 0.0 ||
         sourceImage.size.height <= 0.0) return nil;
-
     UIGraphicsBeginImageContextWithOptions(sourceImage.size, YES, sourceImage.scale);
     [sourceImage drawInRect:(CGRect){.origin = CGPointZero, .size = sourceImage.size}];
     UIImage *uprightImage = UIGraphicsGetImageFromCurrentImageContext();
@@ -45,7 +47,6 @@ static uint8_t *XLCreateGrayscalePixels(CGImageRef image, size_t width, size_t h
     if (!image || width == 0 || height == 0) return NULL;
     uint8_t *pixels = calloc(width * height, sizeof(uint8_t));
     if (!pixels) return NULL;
-
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceGray();
     CGContextRef context = CGBitmapContextCreate(
         pixels, width, height, 8, width, colorSpace, kCGImageAlphaNone);
@@ -54,7 +55,6 @@ static uint8_t *XLCreateGrayscalePixels(CGImageRef image, size_t width, size_t h
         free(pixels);
         return NULL;
     }
-
     CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
     CGContextTranslateCTM(context, 0.0, (CGFloat)height);
     CGContextScaleCTM(context, 1.0, -1.0);
@@ -63,59 +63,22 @@ static uint8_t *XLCreateGrayscalePixels(CGImageRef image, size_t width, size_t h
     return pixels;
 }
 
-static double XLBestTemplateCorrelation(const uint8_t *screen,
-                                        size_t screenWidth,
-                                        size_t screenHeight,
-                                        const uint8_t *pattern,
-                                        size_t patternWidth,
-                                        size_t patternHeight) {
-    if (!screen || !pattern || patternWidth == 0 || patternHeight == 0 ||
-        patternWidth >= screenWidth || patternHeight >= screenHeight) return 0.0;
-
-    const size_t count = patternWidth * patternHeight;
-    double patternSum = 0.0;
-    double patternSquareSum = 0.0;
+static double XLCorrelation(const uint8_t *first, const uint8_t *second,
+                            size_t count) {
+    if (!first || !second || count == 0) return 0.0;
+    double firstSum = 0.0, secondSum = 0.0;
+    double firstSquares = 0.0, secondSquares = 0.0, products = 0.0;
     for (size_t index = 0; index < count; index++) {
-        double value = pattern[index];
-        patternSum += value;
-        patternSquareSum += value * value;
+        double a = first[index], b = second[index];
+        firstSum += a; secondSum += b;
+        firstSquares += a * a; secondSquares += b * b;
+        products += a * b;
     }
-    double patternVariance = patternSquareSum - patternSum * patternSum / count;
-    if (patternVariance <= 1.0) return 0.0;
-
-    size_t startX = (size_t)floor((double)screenWidth * 0.76);
-    size_t startY = (size_t)floor((double)screenHeight * 0.91);
-    size_t endX = screenWidth - patternWidth;
-    size_t endY = screenHeight - patternHeight;
-    if (startX > endX || startY > endY) return 0.0;
-
-    size_t step = MAX((size_t)1, (size_t)lround((double)screenWidth / 375.0));
-    double best = -1.0;
-    for (size_t y = startY; y <= endY; y += step) {
-        for (size_t x = startX; x <= endX; x += step) {
-            double imageSum = 0.0;
-            double imageSquareSum = 0.0;
-            double productSum = 0.0;
-            for (size_t row = 0; row < patternHeight; row++) {
-                const uint8_t *screenRow = screen + (y + row) * screenWidth + x;
-                const uint8_t *patternRow = pattern + row * patternWidth;
-                for (size_t column = 0; column < patternWidth; column++) {
-                    double imageValue = screenRow[column];
-                    double patternValue = patternRow[column];
-                    imageSum += imageValue;
-                    imageSquareSum += imageValue * imageValue;
-                    productSum += imageValue * patternValue;
-                }
-            }
-
-            double imageVariance = imageSquareSum - imageSum * imageSum / count;
-            if (imageVariance <= 1.0) continue;
-            double covariance = productSum - imageSum * patternSum / count;
-            double correlation = covariance / sqrt(imageVariance * patternVariance);
-            if (correlation > best) best = correlation;
-        }
-    }
-    return MAX(0.0, best);
+    double firstVariance = firstSquares - firstSum * firstSum / count;
+    double secondVariance = secondSquares - secondSum * secondSum / count;
+    if (firstVariance <= 1.0 || secondVariance <= 1.0) return 0.0;
+    double covariance = products - firstSum * secondSum / count;
+    return MAX(0.0, covariance / sqrt(firstVariance * secondVariance));
 }
 
 @implementation XLBackIconDetector
@@ -143,61 +106,52 @@ static double XLBestTemplateCorrelation(const uint8_t *screen,
     }
 
     NSData *templateData = [[NSData alloc]
-        initWithBase64EncodedString:XLEmbeddedProfileTemplate options:0];
+        initWithBase64EncodedString:XLEmbeddedBottomBarTemplate options:0];
     UIImage *templateImage = templateData ? [UIImage imageWithData:templateData] : nil;
     if (!templateImage.CGImage) {
         CGImageRelease(screenImage);
-        XLSetDetectorError(error, 4, @"profile template unavailable");
+        XLSetDetectorError(error, 4, @"bottom bar template unavailable");
+        return -1.0;
+    }
+
+    const size_t outputWidth = CGImageGetWidth(templateImage.CGImage);
+    const size_t outputHeight = CGImageGetHeight(templateImage.CGImage);
+    uint8_t *templatePixels = XLCreateGrayscalePixels(
+        templateImage.CGImage, outputWidth, outputHeight);
+    if (!templatePixels) {
+        CGImageRelease(screenImage);
+        XLSetDetectorError(error, 5, @"could not prepare bottom bar template");
         return -1.0;
     }
 
     size_t screenWidth = CGImageGetWidth(screenImage);
     size_t screenHeight = CGImageGetHeight(screenImage);
-    double scale = (double)screenWidth / 750.0;
-    uint8_t *screenPixels = XLCreateGrayscalePixels(
-        screenImage, screenWidth, screenHeight);
+    static const double heightRatios[] = {42.0 / 350.0, 45.0 / 350.0, 48.0 / 350.0};
+    double bestScore = 0.0;
+    for (size_t index = 0; index < 3; index++) {
+        size_t cropWidth = MIN(screenWidth,
+            (size_t)lround((double)screenWidth * 285.0 / 350.0));
+        size_t cropHeight = MIN(screenHeight,
+            (size_t)lround((double)screenWidth * heightRatios[index]));
+        if (cropWidth == 0 || cropHeight == 0) continue;
+        CGRect cropRect = CGRectMake(0.0, (CGFloat)(screenHeight - cropHeight),
+                                     (CGFloat)cropWidth, (CGFloat)cropHeight);
+        CGImageRef cropImage = CGImageCreateWithImageInRect(screenImage, cropRect);
+        if (!cropImage) continue;
+        uint8_t *cropPixels = XLCreateGrayscalePixels(
+            cropImage, outputWidth, outputHeight);
+        CGImageRelease(cropImage);
+        if (!cropPixels) continue;
+        double score = XLCorrelation(cropPixels, templatePixels,
+                                     outputWidth * outputHeight);
+        free(cropPixels);
+        if (score > bestScore) bestScore = score;
+    }
+    free(templatePixels);
     CGImageRelease(screenImage);
-    if (!screenPixels) {
-        free(screenPixels);
-        XLSetDetectorError(error, 5, @"could not prepare images for matching");
-        return -1.0;
-    }
-
-    // The app can render its tab text at slightly different effective sizes on
-    // different display modes. Search several nearby scales instead of
-    // requiring one pixel-exact size.
-    static const double scaleAdjustments[] = {0.84, 0.92, 1.00, 1.08, 1.16};
-    double score = 0.0;
-    size_t bestWidth = 0;
-    size_t bestHeight = 0;
-    for (size_t index = 0;
-         index < sizeof(scaleAdjustments) / sizeof(scaleAdjustments[0]);
-         index++) {
-        double candidateScale = scale * scaleAdjustments[index];
-        size_t templateWidth = MAX((size_t)24,
-            (size_t)lround((double)CGImageGetWidth(templateImage.CGImage) *
-                           candidateScale));
-        size_t templateHeight = MAX((size_t)12,
-            (size_t)lround((double)CGImageGetHeight(templateImage.CGImage) *
-                           candidateScale));
-        uint8_t *templatePixels = XLCreateGrayscalePixels(
-            templateImage.CGImage, templateWidth, templateHeight);
-        if (!templatePixels) continue;
-        double candidateScore = XLBestTemplateCorrelation(
-            screenPixels, screenWidth, screenHeight,
-            templatePixels, templateWidth, templateHeight);
-        free(templatePixels);
-        if (candidateScore > score) {
-            score = candidateScore;
-            bestWidth = templateWidth;
-            bestHeight = templateHeight;
-        }
-    }
-    free(screenPixels);
-    NSLog(@"[XingLanSwipe] embedded profile template score %.4f at %zux%zu "
-           "using %zux%zu template",
-          score, screenWidth, screenHeight, bestWidth, bestHeight);
-    return score;
+    NSLog(@"[XingLanSwipe] bottom navigation score %.4f at %zux%zu",
+          bestScore, screenWidth, screenHeight);
+    return bestScore;
 }
 
 @end

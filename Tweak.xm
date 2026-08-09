@@ -122,7 +122,7 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
                     XLScheduleNextBackSwipe();
                     return;
                 }
-                if (score >= 0.30) {
+                if (score >= 0.50) {
                     NSLog(@"[XingLanSwipe] profile template present (score %.4f); back swipe skipped", score);
                     if (quickVerification) {
                         XLShowStatusText(@"有我", 4.0);
