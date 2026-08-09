@@ -1,6 +1,7 @@
 #import "XLBackIconDetector.h"
 #import <Vision/Vision.h>
 #import <dlfcn.h>
+#import <stdlib.h>
 
 typedef UIImage *(*XLCreateScreenImageFn)(void);
 
@@ -30,6 +31,30 @@ static BOOL XLIsLowerRightText(VNRecognizedTextObservation *observation) {
     return CGRectGetMidX(box) >= 0.72 && CGRectGetMidY(box) <= 0.14;
 }
 
+static CGImageRef XLCreateVisionCompatibleImage(CGImageRef source) {
+    if (!source) return nil;
+    size_t width = CGImageGetWidth(source);
+    size_t height = CGImageGetHeight(source);
+    if (width == 0 || height == 0) return nil;
+
+    uint8_t *pixels = calloc(width * height * 4, sizeof(uint8_t));
+    if (!pixels) return nil;
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(
+        pixels, width, height, 8, width * 4, colorSpace,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(colorSpace);
+    if (!context) {
+        free(pixels);
+        return nil;
+    }
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), source);
+    CGImageRef image = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    free(pixels);
+    return image;
+}
+
 @implementation XLBackIconDetector
 
 - (UIImage *)captureScreenWithError:(NSError **)error {
@@ -53,6 +78,12 @@ static BOOL XLIsLowerRightText(VNRecognizedTextObservation *observation) {
         return -1.0;
     }
 
+    CGImageRef visionImage = XLCreateVisionCompatibleImage(screenshot.CGImage);
+    if (!visionImage) {
+        XLSetDetectorError(error, 5, @"could not normalize screenshot for text recognition");
+        return -1.0;
+    }
+
     VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
     request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
     request.recognitionLanguages = @[@"zh-Hans"];
@@ -61,9 +92,11 @@ static BOOL XLIsLowerRightText(VNRecognizedTextObservation *observation) {
     request.minimumTextHeight = 0.008;
 
     VNImageRequestHandler *handler = [[VNImageRequestHandler alloc]
-        initWithCGImage:screenshot.CGImage options:@{}];
+        initWithCGImage:visionImage options:@{}];
     NSError *visionError = nil;
-    if (![handler performRequests:@[request] error:&visionError]) {
+    BOOL performed = [handler performRequests:@[request] error:&visionError];
+    CGImageRelease(visionImage);
+    if (!performed) {
         XLSetDetectorError(error, 4,
                            visionError.localizedDescription ?: @"text recognition failed");
         return -1.0;
