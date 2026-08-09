@@ -26,29 +26,8 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
     return function;
 }
 
-static NSString *XLTemplatePath(void) {
-    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-    Dl_info info = {0};
-    if (dladdr((const void *)&XLTemplatePath, &info) != 0 && info.dli_fname) {
-        NSString *dylibPath = [NSString stringWithUTF8String:info.dli_fname];
-        NSString *marker = @"/Library/MobileSubstrate/DynamicLibraries/";
-        NSRange range = [dylibPath rangeOfString:marker];
-        if (range.location != NSNotFound) {
-            NSString *prefix = [dylibPath substringToIndex:range.location];
-            [candidates addObject:[prefix stringByAppendingString:
-                @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png"]];
-        }
-    }
-    [candidates addObject:
-        @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png"];
-    [candidates addObject:
-        @"/var/jb/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png"];
-
-    for (NSString *path in candidates) {
-        if ([NSFileManager.defaultManager fileExistsAtPath:path]) return path;
-    }
-    return nil;
-}
+static NSString *const XLEmbeddedProfileTemplate =
+@"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";
 
 static CGImageRef XLCreateUprightImage(UIImage *sourceImage) {
     if (!sourceImage.CGImage || sourceImage.size.width <= 0.0 ||
@@ -163,9 +142,9 @@ static double XLBestTemplateCorrelation(const uint8_t *screen,
         return -1.0;
     }
 
-    NSString *templatePath = XLTemplatePath();
-    UIImage *templateImage = templatePath ?
-        [UIImage imageWithContentsOfFile:templatePath] : nil;
+    NSData *templateData = [[NSData alloc]
+        initWithBase64EncodedString:XLEmbeddedProfileTemplate options:0];
+    UIImage *templateImage = templateData ? [UIImage imageWithData:templateData] : nil;
     if (!templateImage.CGImage) {
         CGImageRelease(screenImage);
         XLSetDetectorError(error, 4, @"profile template unavailable");
@@ -196,8 +175,8 @@ static double XLBestTemplateCorrelation(const uint8_t *screen,
                                              templatePixels, templateWidth, templateHeight);
     free(screenPixels);
     free(templatePixels);
-    NSLog(@"[XingLanSwipe] profile template %@ score %.4f at %zux%zu",
-          templatePath.lastPathComponent, score, screenWidth, screenHeight);
+    NSLog(@"[XingLanSwipe] embedded profile template score %.4f at %zux%zu",
+          score, screenWidth, screenHeight);
     return score;
 }
 
