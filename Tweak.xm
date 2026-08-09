@@ -9,6 +9,7 @@ static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
+static const uint32_t XLInitialBackVerificationDelay = 10;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
@@ -121,17 +122,15 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
                     XLScheduleNextBackSwipe();
                     return;
                 }
-                if (score < 0.30) {
-                    NSLog(@"[XingLanSwipe] profile template absent (score %.4f); skipped", score);
+                if (score >= 0.30) {
+                    NSLog(@"[XingLanSwipe] profile template present (score %.4f); back swipe skipped", score);
                     if (quickVerification) {
-                        double boundedScore = MAX(0.0, MIN(1.0, score));
-                        NSInteger percent = (NSInteger)(boundedScore * 100.0 + 0.5);
-                        XLShowStatusText([NSString stringWithFormat:@"无%ld", (long)percent], 4.0);
+                        XLShowStatusText(@"有我", 4.0);
                     }
                     XLScheduleNextBackSwipe();
                     return;
                 }
-                NSLog(@"[XingLanSwipe] profile template matched (score %.4f); returning", score);
+                NSLog(@"[XingLanSwipe] profile template absent (score %.4f); returning", score);
                 XLDispatchBackSwipe(quickVerification);
             });
         }
@@ -188,7 +187,7 @@ static void XLSetRunning(BOOL running) {
     xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
-        XLScheduleNextBackSwipe();
+        XLScheduleBackSwipeAfterDelay(XLInitialBackVerificationDelay, YES);
         NSLog(@"[XingLanSwipe] started from Control Center");
     } else {
         XLCancelTimer();
