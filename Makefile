@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = XingLanSwipe
 XingLanSwipe_FILES = Tweak.xm XLHIDSender.m
 XingLanSwipe_CFLAGS = -fobjc-arc -Wall -Wextra
-XingLanSwipe_FRAMEWORKS = UIKit Foundation IOKit
+XingLanSwipe_FRAMEWORKS = UIKit Foundation IOKit Vision QuartzCore
 
 BUNDLE_NAME = XingLanSwipeModule
 XingLanSwipeModule_FILES = ControlCenterModule/XingLanSwipeModule.m
