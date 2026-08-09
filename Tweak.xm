@@ -9,7 +9,6 @@ static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
-static const uint32_t XLInitialBackVerificationDelay = 10;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
@@ -187,7 +186,7 @@ static void XLSetRunning(BOOL running) {
     xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
-        XLScheduleBackSwipeAfterDelay(XLInitialBackVerificationDelay, YES);
+        XLScheduleNextBackSwipe();
         NSLog(@"[XingLanSwipe] started from Control Center");
     } else {
         XLCancelTimer();
