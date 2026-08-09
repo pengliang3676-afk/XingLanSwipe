@@ -31,11 +31,24 @@ static BOOL XLIsLowerRightText(VNRecognizedTextObservation *observation) {
     return CGRectGetMidX(box) >= 0.72 && CGRectGetMidY(box) <= 0.14;
 }
 
-static CGImageRef XLCreateVisionCompatibleImage(CGImageRef source) {
+static CGImageRef XLCreateVisionCompatibleImage(UIImage *sourceImage) {
+    if (!sourceImage.CGImage || sourceImage.size.width <= 0.0 || sourceImage.size.height <= 0.0) {
+        return nil;
+    }
+
+    UIGraphicsBeginImageContextWithOptions(sourceImage.size, NO, sourceImage.scale);
+    [sourceImage drawInRect:(CGRect){.origin = CGPointZero, .size = sourceImage.size}];
+    UIImage *uprightImage = UIGraphicsGetImageFromCurrentImageContext();
+    CGImageRef source = uprightImage.CGImage ? CGImageRetain(uprightImage.CGImage) : nil;
+    UIGraphicsEndImageContext();
     if (!source) return nil;
+
     size_t width = CGImageGetWidth(source);
     size_t height = CGImageGetHeight(source);
-    if (width == 0 || height == 0) return nil;
+    if (width == 0 || height == 0) {
+        CGImageRelease(source);
+        return nil;
+    }
 
     uint8_t *pixels = calloc(width * height * 4, sizeof(uint8_t));
     if (!pixels) return nil;
@@ -46,9 +59,11 @@ static CGImageRef XLCreateVisionCompatibleImage(CGImageRef source) {
     CGColorSpaceRelease(colorSpace);
     if (!context) {
         free(pixels);
+        CGImageRelease(source);
         return nil;
     }
     CGContextDrawImage(context, CGRectMake(0, 0, width, height), source);
+    CGImageRelease(source);
     CGImageRef image = CGBitmapContextCreateImage(context);
     CGContextRelease(context);
     free(pixels);
@@ -78,7 +93,7 @@ static CGImageRef XLCreateVisionCompatibleImage(CGImageRef source) {
         return -1.0;
     }
 
-    CGImageRef visionImage = XLCreateVisionCompatibleImage(screenshot.CGImage);
+    CGImageRef visionImage = XLCreateVisionCompatibleImage(screenshot);
     if (!visionImage) {
         XLSetDetectorError(error, 5, @"could not normalize screenshot for text recognition");
         return -1.0;
