@@ -66,15 +66,15 @@ static BOOL XLCreateGrayImage(CGImageRef source, size_t width, size_t height,
                               XLGrayImage *output) {
     if (!source || width == 0 || height == 0 || !output) return NO;
     memset(output, 0, sizeof(*output));
-    uint8_t *pixels = calloc(width * height, sizeof(uint8_t));
-    if (!pixels) return NO;
+    uint8_t *rgbaPixels = calloc(width * height * 4, sizeof(uint8_t));
+    if (!rgbaPixels) return NO;
 
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceGray();
-    CGContextRef context = CGBitmapContextCreate(pixels, width, height, 8, width,
-        colorSpace, (CGBitmapInfo)kCGImageAlphaNone);
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(rgbaPixels, width, height, 8, width * 4,
+        colorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     CGColorSpaceRelease(colorSpace);
     if (!context) {
-        free(pixels);
+        free(rgbaPixels);
         return NO;
     }
     CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
@@ -82,6 +82,19 @@ static BOOL XLCreateGrayImage(CGImageRef source, size_t width, size_t height,
     CGContextScaleCTM(context, 1.0, -1.0);
     CGContextDrawImage(context, CGRectMake(0, 0, width, height), source);
     CGContextRelease(context);
+
+    uint8_t *pixels = calloc(width * height, sizeof(uint8_t));
+    if (!pixels) {
+        free(rgbaPixels);
+        return NO;
+    }
+    for (size_t index = 0; index < width * height; index++) {
+        size_t offset = index * 4;
+        pixels[index] = (uint8_t)((77 * rgbaPixels[offset] +
+                                   150 * rgbaPixels[offset + 1] +
+                                   29 * rgbaPixels[offset + 2]) >> 8);
+    }
+    free(rgbaPixels);
     output->width = width;
     output->height = height;
     output->pixels = pixels;

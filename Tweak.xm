@@ -103,7 +103,9 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
     if (!screenshot) {
         NSLog(@"[XingLanSwipe] profile tab check skipped: %@",
               captureError.localizedDescription ?: @"screenshot unavailable");
-        if (quickVerification) XLShowStatusText(@"图×", 2.0);
+        if (quickVerification) {
+            XLShowStatusText([NSString stringWithFormat:@"E%ld", (long)captureError.code], 4.0);
+        }
         XLScheduleNextBackSwipe();
         return;
     }
@@ -119,7 +121,9 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
                 if (matchError) {
                     NSLog(@"[XingLanSwipe] profile tab check failed: %@",
                           matchError.localizedDescription);
-                    if (quickVerification) XLShowStatusText(@"图×", 4.0);
+                    if (quickVerification) {
+                        XLShowStatusText([NSString stringWithFormat:@"E%ld", (long)matchError.code], 4.0);
+                    }
                     XLScheduleNextBackSwipe();
                     return;
                 }
