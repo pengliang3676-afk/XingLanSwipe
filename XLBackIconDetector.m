@@ -139,37 +139,49 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
     CGFloat scale = MIN(1.0, 420.0 / (CGFloat)sourceWidth);
     size_t screenWidth = MAX((size_t)1, (size_t)llround(sourceWidth * scale));
     size_t screenHeight = MAX((size_t)1, (size_t)llround(sourceHeight * scale));
-    size_t templateWidth = MAX((size_t)8, (size_t)llround(
+    size_t nominalTemplateWidth = MAX((size_t)8, (size_t)llround(
         screenWidth * XLTemplateReferenceWidth / XLTemplateReferenceScreenWidth));
-    size_t templateHeight = MAX((size_t)8, (size_t)llround(
+    size_t nominalTemplateHeight = MAX((size_t)8, (size_t)llround(
         screenWidth * XLTemplateReferenceHeight / XLTemplateReferenceScreenWidth));
-    if (templateWidth >= screenWidth || templateHeight >= screenHeight) {
+    if (nominalTemplateWidth >= screenWidth || nominalTemplateHeight >= screenHeight) {
         XLSetDetectorError(error, 4, @"template dimensions invalid");
         return -1.0;
     }
 
-    XLGrayImage screen = {0}, templateImage = {0};
-    if (!XLCreateGrayImage(screenshot.CGImage, screenWidth, screenHeight, &screen) ||
-        !XLCreateGrayImage(templateSource.CGImage, templateWidth, templateHeight,
-                           &templateImage)) {
+    XLGrayImage screen = {0};
+    if (!XLCreateGrayImage(screenshot.CGImage, screenWidth, screenHeight, &screen)) {
         XLFreeGrayImage(&screen);
-        XLFreeGrayImage(&templateImage);
         XLSetDetectorError(error, 5, @"could not prepare image matcher");
         return -1.0;
     }
 
-    size_t minX = MIN(screenWidth - templateWidth, (size_t)llround(screenWidth * 0.80));
-    size_t maxX = screenWidth - templateWidth;
-    size_t minY = MIN(screenHeight - templateHeight, (size_t)llround(screenHeight * 0.94));
-    size_t maxY = screenHeight - templateHeight;
     double bestScore = -1.0;
-    for (size_t y = minY; y <= maxY; y++) {
-        for (size_t x = minX; x <= maxX; x++) {
-            bestScore = MAX(bestScore, XLScoreAt(&screen, &templateImage, x, y));
+    static const CGFloat scaleCandidates[] = {0.78, 0.89, 1.00, 1.11, 1.22};
+    for (size_t candidate = 0; candidate < sizeof(scaleCandidates) / sizeof(scaleCandidates[0]);
+         candidate++) {
+        size_t templateWidth = MAX((size_t)8, (size_t)llround(
+            nominalTemplateWidth * scaleCandidates[candidate]));
+        size_t templateHeight = MAX((size_t)8, (size_t)llround(
+            nominalTemplateHeight * scaleCandidates[candidate]));
+        if (templateWidth >= screenWidth || templateHeight >= screenHeight) continue;
+
+        XLGrayImage templateImage = {0};
+        if (!XLCreateGrayImage(templateSource.CGImage, templateWidth, templateHeight,
+                               &templateImage)) {
+            continue;
         }
+        size_t minX = MIN(screenWidth - templateWidth, (size_t)llround(screenWidth * 0.78));
+        size_t maxX = screenWidth - templateWidth;
+        size_t minY = MIN(screenHeight - templateHeight, (size_t)llround(screenHeight * 0.92));
+        size_t maxY = screenHeight - templateHeight;
+        for (size_t y = minY; y <= maxY; y++) {
+            for (size_t x = minX; x <= maxX; x++) {
+                bestScore = MAX(bestScore, XLScoreAt(&screen, &templateImage, x, y));
+            }
+        }
+        XLFreeGrayImage(&templateImage);
     }
     XLFreeGrayImage(&screen);
-    XLFreeGrayImage(&templateImage);
     return bestScore;
 }
 
