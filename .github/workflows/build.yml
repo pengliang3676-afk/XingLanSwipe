@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scheme: [roothide]
+        scheme: [rootless]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -47,9 +47,6 @@ jobs:
         run: |
           echo "THEOS=$GITHUB_WORKSPACE/theos-roothide" >> "$GITHUB_ENV"
           echo "THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}" >> "$GITHUB_ENV"
-
-      - name: Select RootHide package metadata
-        run: cp control.roothide control
 
       - name: Build package
         run: gmake clean package FINALPACKAGE=1

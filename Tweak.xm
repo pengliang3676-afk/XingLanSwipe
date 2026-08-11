@@ -15,8 +15,21 @@ extern char **environ;
 static BOOL xlRunning = NO;
 static pid_t xlWorkerPID = 0;
 static dispatch_source_t xlWorkerExitSource;
+static dispatch_source_t xlForegroundTimer;
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
+
+static NSString *const XLTargetApplicationBundleIdentifier = @"com.baidu.BaiduMobileInfo";
+
+@interface UIApplication (XLFrontmostApplication)
+- (id)_accessibilityFrontMostApplication;
+@end
+
+@interface NSObject (XLApplicationIdentity)
++ (id)sharedInstance;
+- (id)frontmostApplication;
+- (NSString *)bundleIdentifier;
+@end
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -51,6 +64,69 @@ static BOOL XLWriteWorkerFlag(BOOL running) {
     return success;
 }
 
+static BOOL XLWriteForegroundFlag(BOOL foreground) {
+    NSString *value = foreground ? @"1\n" : @"0\n";
+    NSString *flagPath = [NSString stringWithUTF8String:XLForegroundFlagPath];
+    NSError *error = nil;
+    BOOL success = [value writeToFile:flagPath
+                           atomically:YES
+                             encoding:NSUTF8StringEncoding
+                                error:&error];
+    if (!success) {
+        NSLog(@"[XingLanSwipe] foreground flag write failed: %@",
+              error.localizedDescription ?: @"unknown error");
+    }
+    return success;
+}
+
+static BOOL XLTargetApplicationIsForeground(void) {
+    UIApplication *application = UIApplication.sharedApplication;
+    id frontmostApplication = nil;
+    if ([application respondsToSelector:@selector(_accessibilityFrontMostApplication)]) {
+        frontmostApplication = [application _accessibilityFrontMostApplication];
+    }
+    if (!frontmostApplication) {
+        Class workspaceClass = NSClassFromString(@"SBMainWorkspace");
+        if ([workspaceClass respondsToSelector:@selector(sharedInstance)]) {
+            id workspace = [workspaceClass sharedInstance];
+            if ([workspace respondsToSelector:@selector(frontmostApplication)]) {
+                frontmostApplication = [workspace frontmostApplication];
+            }
+        }
+    }
+    if (![frontmostApplication respondsToSelector:@selector(bundleIdentifier)]) {
+        return NO;
+    }
+    return [[frontmostApplication bundleIdentifier]
+        isEqualToString:XLTargetApplicationBundleIdentifier];
+}
+
+static void XLStopForegroundMonitor(void) {
+    if (xlForegroundTimer) {
+        dispatch_source_cancel(xlForegroundTimer);
+        xlForegroundTimer = nil;
+    }
+    XLWriteForegroundFlag(NO);
+}
+
+static void XLStartForegroundMonitor(void) {
+    XLStopForegroundMonitor();
+    XLWriteForegroundFlag(XLTargetApplicationIsForeground());
+    xlForegroundTimer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(
+        xlForegroundTimer,
+        dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+        NSEC_PER_SEC,
+        NSEC_PER_SEC / 10);
+    dispatch_source_set_event_handler(xlForegroundTimer, ^{
+        if (xlRunning) {
+            XLWriteForegroundFlag(XLTargetApplicationIsForeground());
+        }
+    });
+    dispatch_resume(xlForegroundTimer);
+}
+
 static void XLUpdateUI(void) {
     if (!xlHomeStatusLabel) return;
     xlHomeStatusLabel.hidden = !xlRunning;
@@ -81,6 +157,11 @@ static NSString *XLWorkerPathInsideBundle(NSString *bundlePath) {
 
 static NSString *XLFindWorkerByBundleIdentifier(void) {
     NSString *bundleIdentifier = [NSString stringWithUTF8String:XLWorkerBundleIdentifier];
+
+    NSString *rootlessPath = @"/var/jb/Applications/com.auto.go.app/Runtime/app";
+    if ([NSFileManager.defaultManager isExecutableFileAtPath:rootlessPath]) {
+        return rootlessPath;
+    }
 
     // TrollStore installs apps in a UUID directory. Resolve that directory by
     // bundle identifier so the path remains valid after reinstalling AutoGo.
@@ -128,6 +209,7 @@ static void XLHandleWorkerExit(pid_t pid) {
     XLCleanupWorkerState();
     if (xlRunning) {
         xlRunning = NO;
+        XLStopForegroundMonitor();
         XLWritePreferenceRunning(NO);
         XLWriteWorkerFlag(NO);
         XLUpdateUI();
@@ -151,6 +233,10 @@ static BOOL XLStartWorker(void) {
         return NO;
     }
     if (!XLWriteWorkerFlag(YES)) return NO;
+    if (!XLWriteForegroundFlag(XLTargetApplicationIsForeground())) {
+        XLWriteWorkerFlag(NO);
+        return NO;
+    }
 
     const char *path = executable.fileSystemRepresentation;
     char *const arguments[] = {(char *)path, NULL};
@@ -203,12 +289,18 @@ static void XLSetRunning(BOOL requestedRunning) {
 
         BOOL started = XLStartWorker();
         xlRunning = started;
+        if (started) {
+            XLStartForegroundMonitor();
+        } else {
+            XLStopForegroundMonitor();
+        }
         XLWritePreferenceRunning(started);
         XLUpdateUI();
         return;
     }
 
     xlRunning = NO;
+    XLStopForegroundMonitor();
     XLWritePreferenceRunning(NO);
     XLStopWorker();
     XLUpdateUI();
@@ -316,6 +408,7 @@ static void XingLanSwipeInit(void) {
 
         dispatch_async(dispatch_get_main_queue(), ^{
             XLWriteWorkerFlag(NO);
+            XLWriteForegroundFlag(NO);
             XLWritePreferenceRunning(NO);
             XLInstallStatusOverlay();
             CFNotificationCenterAddObserver(

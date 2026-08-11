@@ -5,3 +5,4 @@
 #define XLControlCenterStateNotification "com.jibeib.xinglanswipe.state-changed"
 #define XLWorkerBundleIdentifier "com.auto.go"
 #define XLWorkerRunFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker"
+#define XLForegroundFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.foreground"
