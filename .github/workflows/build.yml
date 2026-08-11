@@ -58,6 +58,7 @@ jobs:
           cp control.roothide control
           rm -rf layout/DEBIAN layout/Library/LaunchDaemons
           cp -R layout.roothide/. layout/
+          rm -rf layout/Library/LaunchDaemons
           chmod 0755 layout/DEBIAN/postinst layout/DEBIAN/prerm
 
       - name: Build package

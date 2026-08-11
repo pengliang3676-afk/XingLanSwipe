@@ -1,9 +1,4 @@
 #!/bin/sh
 
-LABEL="com.jibeib.xinglanswipe.roothide-daemon"
-PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-
-launchctl bootout "system/${LABEL}" >/dev/null 2>&1 || true
-launchctl bootstrap system "${PLIST}" >/dev/null 2>&1 || launchctl load "${PLIST}" >/dev/null 2>&1 || true
 uicache -a >/dev/null 2>&1 || true
 exit 0

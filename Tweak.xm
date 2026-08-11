@@ -1,32 +1,17 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
-#import <spawn.h>
-#import <signal.h>
-#import <arpa/inet.h>
-#import <fcntl.h>
-#import <netinet/in.h>
-#import <sys/socket.h>
-#import <sys/stat.h>
-#import <sys/types.h>
-#import <errno.h>
-#import <string.h>
-#import <unistd.h>
-#import <objc/message.h>
+#import "XLBackIconDetector.h"
 #import "XingLanSwipeShared.h"
 
-extern char **environ;
+static const NSTimeInterval XLRecognitionDelay = 4.0;
 
 static BOOL xlRunning = NO;
-static BOOL xlRequestedRunning = NO;
-static BOOL xlStartInProgress = NO;
-static int xlRunSocket = -1;
-static dispatch_queue_t xlWorkerQueue;
+static NSUInteger xlRunGeneration = 0;
+static XLBackIconDetector *xlDetector;
+static dispatch_queue_t xlRecognitionQueue;
 static UIWindow *xlStatusWindow;
-static UILabel *xlHomeStatusLabel;
-static NSString *xlDiagnosticStatus;
-static NSString *xlUploadFailureCode;
-static NSString *xlLastAutoGoResponse;
+static UILabel *xlStatusLabel;
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -39,598 +24,75 @@ static NSString *xlLastAutoGoResponse;
 }
 @end
 
-static void XLWritePreferenceRunning(BOOL running) {
+static void XLWriteRunningPreference(BOOL running) {
     CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
         running ? kCFBooleanTrue : kCFBooleanFalse,
         CFSTR(XLPreferenceDomain));
     CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
 }
 
-static BOOL XLWriteWorkerFlag(BOOL running) {
-    NSString *value = running ? @"1\n" : @"0\n";
-    NSString *flagPath = [NSString stringWithUTF8String:XLWorkerRunFlagPath];
-    NSError *error = nil;
-    BOOL success = [value writeToFile:flagPath
-                           atomically:YES
-                             encoding:NSUTF8StringEncoding
-                                error:&error];
-    if (!success) {
-        NSLog(@"[XingLanSwipe] worker flag write failed: %@",
-              error.localizedDescription ?: @"unknown error");
-    }
-    return success;
+static void XLSetStatus(NSString *text) {
+    if (!xlStatusLabel) return;
+    xlStatusLabel.hidden = !xlRunning;
+    xlStatusLabel.text = text ?: @"";
 }
 
-static void XLUpdateUI(void) {
-    if (!xlHomeStatusLabel) return;
-    xlHomeStatusLabel.hidden = !xlRunning && xlDiagnosticStatus.length == 0;
-    xlHomeStatusLabel.text = xlDiagnosticStatus.length > 0 ? xlDiagnosticStatus : @"开";
-}
+static void XLPerformOneShotRecognition(NSUInteger generation) {
+    if (!xlRunning || generation != xlRunGeneration) return;
 
-static BOOL XLWriteAll(int socketFD, const void *bytes, size_t length) {
-    const uint8_t *cursor = (const uint8_t *)bytes;
-    while (length > 0) {
-        ssize_t written = send(socketFD, cursor, length, 0);
-        if (written < 0 && errno == EINTR) continue;
-        if (written <= 0) return NO;
-        cursor += written;
-        length -= (size_t)written;
-    }
-    return YES;
-}
-
-static BOOL XLReadAll(int socketFD, void *bytes, size_t length) {
-    uint8_t *cursor = (uint8_t *)bytes;
-    while (length > 0) {
-        ssize_t received = recv(socketFD, cursor, length, 0);
-        if (received < 0 && errno == EINTR) continue;
-        if (received <= 0) return NO;
-        cursor += received;
-        length -= (size_t)received;
-    }
-    return YES;
-}
-
-static int XLConnectAutoGoService(void) {
-    int socketFD = socket(AF_INET, SOCK_STREAM, 0);
-    if (socketFD < 0) return -1;
-
-    struct timeval timeout = {.tv_sec = 15, .tv_usec = 0};
-    setsockopt(socketFD, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-    setsockopt(socketFD, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-    struct sockaddr_in address;
-    memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_port = htons(XLAutoGoServicePort);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (connect(socketFD, (struct sockaddr *)&address, sizeof(address)) != 0) {
-        close(socketFD);
-        return -1;
-    }
-    return socketFD;
-}
-
-static void XLRequestAutoGoDebugService(void);
-static void XLRequestAutoGoDebugServiceStop(void);
-
-static id XLCallObject(id target, SEL selector) {
-    if (!target || !selector || ![target respondsToSelector:selector]) return nil;
-    return ((id (*)(id, SEL))objc_msgSend)(target, selector);
-}
-
-static id XLCallObjectWithObject(id target, SEL selector, id argument) {
-    if (!target || !selector || ![target respondsToSelector:selector]) return nil;
-    return ((id (*)(id, SEL, id))objc_msgSend)(target, selector, argument);
-}
-
-static NSString *XLValidAutoGoBundlePath(NSString *bundlePath) {
-    if (bundlePath.length == 0) return nil;
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSArray<NSString *> *required = @[@"agoverlayd", @"floatball", @"Runtime"];
-    for (NSString *item in required) {
-        NSString *path = [bundlePath stringByAppendingPathComponent:item];
-        BOOL isDirectory = NO;
-        if (![fileManager fileExistsAtPath:path isDirectory:&isDirectory]) return nil;
-        if (![item isEqualToString:@"Runtime"] &&
-            ![fileManager isExecutableFileAtPath:path]) return nil;
-        if ([item isEqualToString:@"Runtime"] && !isDirectory) return nil;
-    }
-    return bundlePath;
-}
-
-static NSString *XLFindAutoGoBundlePath(void) {
-    NSString *bundleIdentifier = [NSString stringWithUTF8String:XLAutoGoBundleIdentifier];
-    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
-    id proxy = XLCallObjectWithObject(
-        proxyClass,
-        NSSelectorFromString(@"applicationProxyForIdentifier:"),
-        bundleIdentifier);
-    NSURL *bundleURL = XLCallObject(proxy, NSSelectorFromString(@"bundleURL"));
-    NSString *resolved = XLValidAutoGoBundlePath(bundleURL.path);
-    if (resolved) return resolved;
-
-    // TrollStore uses a changing UUID directory. Only use this scan if
-    // LSApplicationProxy does not expose the bundle URL on the current system.
-    NSString *applicationsRoot = @"/var/containers/Bundle/Application";
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSArray<NSString *> *containers =
-        [fileManager contentsOfDirectoryAtPath:applicationsRoot error:nil];
-    for (NSString *containerName in containers) {
-        NSString *containerPath = [applicationsRoot stringByAppendingPathComponent:containerName];
-        NSArray<NSString *> *items =
-            [fileManager contentsOfDirectoryAtPath:containerPath error:nil];
-        for (NSString *item in items) {
-            if (![item.pathExtension.lowercaseString isEqualToString:@"app"]) continue;
-            NSString *bundlePath = [containerPath stringByAppendingPathComponent:item];
-            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
-                [bundlePath stringByAppendingPathComponent:@"Info.plist"]];
-            if (![info[@"CFBundleIdentifier"] isEqualToString:bundleIdentifier]) continue;
-            resolved = XLValidAutoGoBundlePath(bundlePath);
-            if (resolved) return resolved;
-        }
-    }
-    return nil;
-}
-
-static BOOL XLSpawnAutoGoService(NSString *bundlePath, NSString *executableName) {
-    NSString *executable = [bundlePath stringByAppendingPathComponent:executableName];
-    NSString *runtime = [bundlePath stringByAppendingPathComponent:@"Runtime"];
-    const char *path = executable.fileSystemRepresentation;
-    const char *runtimePath = runtime.fileSystemRepresentation;
-    if (!path || !runtimePath) return NO;
-
-    char *const arguments[] = {
-        (char *)path,
-        (char *)runtimePath,
-        NULL,
-    };
-    pid_t pid = 0;
-    int result = posix_spawn(&pid, path, NULL, NULL, arguments, environ);
-    NSLog(@"[XingLanSwipe] AutoGo service %@ spawn result=%d pid=%d",
-          executableName, result, pid);
-    return result == 0 && pid > 0;
-}
-
-static BOOL XLStartAutoGoServicesOnDemand(void) {
-    int socketFD = XLConnectAutoGoService();
-    if (socketFD >= 0) {
-        close(socketFD);
-        return YES;
-    }
-
-    // A running floatball may only need the debug listener enabled.
-    XLRequestAutoGoDebugService();
-    usleep(350 * 1000);
-    socketFD = XLConnectAutoGoService();
-    if (socketFD >= 0) {
-        close(socketFD);
-        return YES;
-    }
-
-    NSString *bundlePath = XLFindAutoGoBundlePath();
-    if (bundlePath.length == 0) {
-        NSLog(@"[XingLanSwipe] TrollStore AutoGo bundle was not found");
-        return NO;
-    }
-
-    BOOL overlayStarted = XLSpawnAutoGoService(bundlePath, @"agoverlayd");
-    usleep(250 * 1000);
-    BOOL floatballStarted = XLSpawnAutoGoService(bundlePath, @"floatball");
-    return overlayStarted && floatballStarted;
-}
-
-static void XLRequestAutoGoDebugService(void) {
-    CFNotificationCenterPostNotification(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        CFSTR(XLAutoGoDebugEnableNotification),
-        NULL, NULL, YES);
-}
-
-static void XLRequestAutoGoDebugServiceStop(void) {
-    CFNotificationCenterRef center =
-        CFNotificationCenterGetDarwinNotifyCenter();
-    CFNotificationCenterPostNotification(
-        center, CFSTR(XLAutoGoDebugDisableNotification),
-        NULL, NULL, YES);
-    CFNotificationCenterPostNotification(
-        center, CFSTR(XLAutoGoRemoteDebugDisableNotification),
-        NULL, NULL, YES);
-}
-
-static BOOL __attribute__((unused)) XLWaitForAutoGoService(void) {
-    (void)XLStartAutoGoServicesOnDemand();
-    for (NSUInteger attempt = 0; attempt < 50; attempt++) {
-        int socketFD = XLConnectAutoGoService();
-        if (socketFD >= 0) {
-            close(socketFD);
-            return YES;
-        }
-
-        if (attempt % 5 == 0) XLRequestAutoGoDebugService();
-        usleep(200 * 1000);
-    }
-
-    NSLog(@"[XingLanSwipe] AutoGo background service did not open port %d",
-          XLAutoGoServicePort);
-    return NO;
-}
-
-static BOOL XLSendFrame(int socketFD, uint8_t command,
-                        const void *payload, uint32_t payloadLength) {
-    uint8_t header[5] = {command, 0, 0, 0, 0};
-    uint32_t networkLength = htonl(payloadLength);
-    memcpy(header + 1, &networkLength, sizeof(networkLength));
-    if (!XLWriteAll(socketFD, header, sizeof(header))) return NO;
-    return payloadLength == 0 || XLWriteAll(socketFD, payload, payloadLength);
-}
-
-static BOOL XLReadFrame(int socketFD, uint8_t *command, NSData **payload) {
-    uint8_t header[5];
-    if (!XLReadAll(socketFD, header, sizeof(header))) return NO;
-
-    uint32_t networkLength = 0;
-    memcpy(&networkLength, header + 1, sizeof(networkLength));
-    uint32_t payloadLength = ntohl(networkLength);
-    if (payloadLength > XLMaximumAutoGoFrameSize) return NO;
-
-    NSMutableData *framePayload = [NSMutableData dataWithLength:payloadLength];
-    if (payloadLength > 0 &&
-        !XLReadAll(socketFD, framePayload.mutableBytes, payloadLength)) {
-        return NO;
-    }
-    if (command) *command = header[0];
-    if (payload) *payload = framePayload;
-    return YES;
-}
-
-static BOOL XLReadExpectedOKFrame(int socketFD, uint8_t expectedCommand,
-                                  NSString *stage) {
-    xlLastAutoGoResponse = nil;
-    uint8_t command = 0;
-    NSData *payload = nil;
-    if (!XLReadFrame(socketFD, &command, &payload)) {
-        NSLog(@"[XingLanSwipe] AutoGo %@ response missing", stage);
-        return NO;
-    }
-
-    NSString *payloadText = [[NSString alloc] initWithData:payload
-                                                   encoding:NSUTF8StringEncoding];
-    xlLastAutoGoResponse = payloadText ?: payload.description;
-    NSLog(@"[XingLanSwipe] AutoGo %@ response command=%u payload=%@",
-          stage, command, payloadText ?: payload.description);
-    static const uint8_t expected[] = {'O', 'K'};
-    return command == expectedCommand &&
-           payload.length == sizeof(expected) &&
-           memcmp(payload.bytes, expected, sizeof(expected)) == 0;
-}
-
-static NSString *XLWorkerResourcePath(void) {
-    NSBundle *moduleBundle = [NSBundle bundleWithIdentifier:
-        [NSString stringWithUTF8String:XLControlCenterBundleIdentifier]];
-    NSString *bundledWorker = [moduleBundle pathForResource:@"AutoGoWorker" ofType:nil];
-    if ([NSFileManager.defaultManager isReadableFileAtPath:bundledWorker]) {
-        return bundledWorker;
-    }
-
-    NSArray<NSString *> *candidates = @[
-        @"/var/jb/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/AutoGoWorker",
-        @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/AutoGoWorker",
-    ];
-    for (NSString *path in candidates) {
-        if ([NSFileManager.defaultManager isReadableFileAtPath:path]) return path;
-    }
-    return nil;
-}
-
-static BOOL XLUploadWorkerOnSocket(int socketFD) {
-    xlUploadFailureCode = nil;
-    NSString *workerPath = XLWorkerResourcePath();
-    if (!workerPath) {
-        NSLog(@"[XingLanSwipe] bundled AutoGo worker is missing");
-        xlUploadFailureCode = @"E21";
-        return NO;
-    }
-
-    int workerFD = open(workerPath.fileSystemRepresentation, O_RDONLY);
-    if (workerFD < 0) {
-        xlUploadFailureCode = @"E22";
-        return NO;
-    }
-
-    struct stat workerStat;
-    if (fstat(workerFD, &workerStat) != 0 || workerStat.st_size <= 0 ||
-        (uint64_t)workerStat.st_size > UINT32_MAX - 7) {
-        close(workerFD);
-        xlUploadFailureCode = @"E22";
-        return NO;
-    }
-
-    const char remoteName[] = "debug";
-    uint32_t payloadLength = (uint32_t)workerStat.st_size +
-                             2 + (uint32_t)(sizeof(remoteName) - 1);
-    uint8_t header[5] = {XLAutoGoPushCommand, 0, 0, 0, 0};
-    uint32_t networkPayloadLength = htonl(payloadLength);
-    memcpy(header + 1, &networkPayloadLength, sizeof(networkPayloadLength));
-    uint16_t networkNameLength = htons((uint16_t)(sizeof(remoteName) - 1));
-
-    BOOL success = XLWriteAll(socketFD, header, sizeof(header)) &&
-                   XLWriteAll(socketFD, &networkNameLength, sizeof(networkNameLength)) &&
-                   XLWriteAll(socketFD, remoteName, sizeof(remoteName) - 1);
-    uint8_t buffer[64 * 1024];
-    while (success) {
-        ssize_t count = read(workerFD, buffer, sizeof(buffer));
-        if (count < 0 && errno == EINTR) continue;
-        if (count < 0) {
-            success = NO;
-            break;
-        }
-        if (count == 0) break;
-        success = XLWriteAll(socketFD, buffer, (size_t)count);
-    }
-    close(workerFD);
-
-    if (!success) {
-        xlUploadFailureCode = @"E24";
-    } else if (!XLReadExpectedOKFrame(socketFD, XLAutoGoAckCommand, @"upload")) {
-        xlUploadFailureCode = @"E25";
-        success = NO;
-    }
-    NSLog(@"[XingLanSwipe] AutoGo worker upload %@", success ? @"succeeded" : @"failed");
-    return success;
-}
-
-static BOOL XLRequestRootHideWorkerCleanup(void) {
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSString *statusPath =
-        [NSString stringWithUTF8String:XLRootHideDaemonStatusPath];
-    if (![fileManager fileExistsAtPath:statusPath]) return YES;
-
-    NSString *requestPath =
-        [NSString stringWithUTF8String:XLWorkerCleanupRequestPath];
-    NSString *ackPath =
-        [NSString stringWithUTF8String:XLWorkerCleanupAckPath];
-    NSString *token = NSUUID.UUID.UUIDString;
-    NSError *error = nil;
-    if (![token writeToFile:requestPath
-                 atomically:YES
-                   encoding:NSUTF8StringEncoding
-                      error:&error]) {
-        NSLog(@"[XingLanSwipe] stale worker cleanup request failed: %@",
-              error.localizedDescription ?: @"unknown error");
-        return NO;
-    }
-    chmod(requestPath.fileSystemRepresentation, 0644);
-
-    for (NSUInteger attempt = 0; attempt < 60 && xlRequestedRunning; attempt++) {
-        NSString *ack = [NSString stringWithContentsOfFile:ackPath
-                                                   encoding:NSUTF8StringEncoding
-                                                      error:nil];
-        ack = [ack stringByTrimmingCharactersInSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if ([ack isEqualToString:token]) {
-            NSLog(@"[XingLanSwipe] stale AutoGo worker cleanup acknowledged");
-            return YES;
-        }
-        usleep(100 * 1000);
-    }
-
-    NSLog(@"[XingLanSwipe] stale AutoGo worker cleanup timed out");
-    return NO;
-}
-
-static int XLPrepareWorkerSessionWithRetry(void) {
-    if (!XLRequestRootHideWorkerCleanup()) {
-        xlUploadFailureCode = @"E26";
-        return -1;
-    }
-    for (NSUInteger attempt = 1;
-         attempt <= 3 && xlRequestedRunning;
-         attempt++) {
-        // The listener can accept TCP slightly before its upload handler is
-        // ready on a newly installed device. Give it time to finish starting.
-        usleep(attempt == 1 ? 2000 * 1000 : 2500 * 1000);
-        xlLastAutoGoResponse = nil;
-        int socketFD = XLConnectAutoGoService();
-        if (socketFD < 0) {
-            xlUploadFailureCode = @"E23";
-        } else if (XLUploadWorkerOnSocket(socketFD)) {
-            // AutoGo's official client keeps one connection for PUSH,
-            // SYNC_DONE and RUN. Some devices reject RUN when SYNC_DONE is
-            // omitted or when a new connection is opened between commands.
-            BOOL syncSent = XLSendFrame(socketFD, XLAutoGoSyncDoneCommand,
-                                        NULL, 0);
-            BOOL syncAccepted = syncSent &&
-                XLReadExpectedOKFrame(socketFD,
-                                      XLAutoGoSyncDoneAckCommand,
-                                      @"sync");
-            if (syncAccepted) return socketFD;
-            xlUploadFailureCode = @"E30";
-            close(socketFD);
-        } else {
-            close(socketFD);
-        }
-
-        NSLog(@"[XingLanSwipe] AutoGo worker prepare attempt %lu failed code=%@",
-              (unsigned long)attempt,
-              xlUploadFailureCode ?: @"unknown");
-        if (attempt < 3 && xlRequestedRunning) {
-            if ([xlLastAutoGoResponse isEqualToString:@"ERR:open failed"]) {
-                if (!XLRequestRootHideWorkerCleanup()) {
-                    xlUploadFailureCode = @"E26";
-                    break;
-                }
-            } else {
-                XLRequestAutoGoDebugService();
-                (void)XLWaitForAutoGoService();
-                usleep(500 * 1000);
-            }
-        }
-    }
-    return -1;
-}
-
-static BOOL XLRunWorkerSession(int socketFD) {
-    if (socketFD < 0) return NO;
-    static const char runMode[] = "bin";
-    if (!XLSendFrame(socketFD, XLAutoGoRunCommand,
-                     runMode, (uint32_t)(sizeof(runMode) - 1)) ||
-        !XLReadExpectedOKFrame(socketFD, XLAutoGoAckCommand, @"run")) {
-        close(socketFD);
-        return NO;
-    }
-
-    if (!xlRequestedRunning) {
-        close(socketFD);
-        return YES;
-    }
-
-    struct timeval noTimeout = {.tv_sec = 0, .tv_usec = 0};
-    setsockopt(socketFD, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, sizeof(noTimeout));
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!xlRequestedRunning) {
-            shutdown(socketFD, SHUT_RDWR);
-            return;
-        }
-        xlRunSocket = socketFD;
-        xlRunning = YES;
-        xlStartInProgress = NO;
-        xlDiagnosticStatus = nil;
-        XLWritePreferenceRunning(YES);
-        XLUpdateUI();
-        NSLog(@"[XingLanSwipe] AutoGo worker started through debug service");
-    });
-
-    for (;;) {
-        uint8_t command = 0;
-        NSData *payload = nil;
-        if (!XLReadFrame(socketFD, &command, &payload)) break;
-        if (command == XLAutoGoLogCommand) continue;
-        if (command == XLAutoGoExitCommand) break;
-        if (command == XLAutoGoAckCommand && payload.length == 2 &&
-            memcmp(payload.bytes, "OK", 2) != 0) {
-            break;
-        }
-    }
-
-    close(socketFD);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (xlRunSocket == socketFD) xlRunSocket = -1;
-        xlStartInProgress = NO;
-        if (xlRequestedRunning) {
-            xlRequestedRunning = NO;
-            xlRunning = NO;
-            XLWritePreferenceRunning(NO);
-            XLWriteWorkerFlag(NO);
-            XLUpdateUI();
-            NSLog(@"[XingLanSwipe] AutoGo worker session ended unexpectedly");
-        }
-    });
-    return YES;
-}
-
-static void __attribute__((unused)) XLSendStopCommand(void) {
-    int socketFD = XLConnectAutoGoService();
-    if (socketFD >= 0) {
-        (void)XLSendFrame(socketFD, XLAutoGoStopCommand, NULL, 0);
-        close(socketFD);
-    }
-}
-
-static void XLStartWorker(void) {
-    if (xlRunning || xlStartInProgress) return;
-    xlDiagnosticStatus = @"开";
-    XLUpdateUI();
-    if (!XLWriteWorkerFlag(YES)) {
-        xlDiagnosticStatus = @"E0";
-        xlRequestedRunning = NO;
-        XLWritePreferenceRunning(NO);
-        XLUpdateUI();
+    XLSetStatus(@"识");
+    NSError *captureError = nil;
+    UIImage *screenshot = [xlDetector captureScreenWithError:&captureError];
+    if (!screenshot) {
+        NSLog(@"[XingLanSwipe] native capture failed: %@",
+              captureError.localizedDescription ?: @"unknown error");
+        XLSetStatus(@"图错");
         return;
     }
 
-    xlStartInProgress = YES;
-    dispatch_async(xlWorkerQueue, ^{
-        if (!XLWaitForAutoGoService()) {
+    dispatch_async(xlRecognitionQueue, ^{
+        @autoreleasepool {
+            NSError *recognitionError = nil;
+            BOOL found = [xlDetector containsMyTextInScreenshot:screenshot
+                                                           error:&recognitionError];
             dispatch_async(dispatch_get_main_queue(), ^{
-                xlStartInProgress = NO;
-                xlRequestedRunning = NO;
-                xlRunning = NO;
-                xlDiagnosticStatus = @"E1";
-                XLWritePreferenceRunning(NO);
-                XLWriteWorkerFlag(NO);
-                XLUpdateUI();
-            });
-            return;
-        }
-        int workerSocket = XLPrepareWorkerSessionWithRetry();
-        if (workerSocket < 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                xlStartInProgress = NO;
-                xlRequestedRunning = NO;
-                xlRunning = NO;
-                xlDiagnosticStatus = xlUploadFailureCode ?: @"E2";
-                XLWritePreferenceRunning(NO);
-                XLWriteWorkerFlag(NO);
-                XLUpdateUI();
-            });
-            return;
-        }
-        if (!xlRequestedRunning) {
-            close(workerSocket);
-            return;
-        }
-        if (!XLRunWorkerSession(workerSocket)) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                xlStartInProgress = NO;
-                if (xlRequestedRunning) {
-                    xlRequestedRunning = NO;
-                    XLWritePreferenceRunning(NO);
+                if (!xlRunning || generation != xlRunGeneration) return;
+                if (recognitionError) {
+                    NSLog(@"[XingLanSwipe] native Vision OCR failed: %@",
+                          recognitionError.localizedDescription ?: @"unknown error");
+                    XLSetStatus(@"识错");
+                    return;
                 }
-                xlRunning = NO;
-                xlDiagnosticStatus = @"E3";
-                XLWriteWorkerFlag(NO);
-                XLUpdateUI();
+
+                NSLog(@"[XingLanSwipe] native Vision OCR result=%@",
+                      found ? @"MY_FOUND" : @"MY_NOT_FOUND");
+                XLSetStatus(found ? @"有我" : @"无我");
             });
         }
     });
 }
 
-static void XLStopWorker(void) {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int socketFD = xlRunSocket;
-        if (socketFD >= 0) {
-            (void)XLSendFrame(socketFD, XLAutoGoStopCommand, NULL, 0);
-        } else {
-            XLSendStopCommand();
-        }
-        usleep(500 * 1000);
-        XLWriteWorkerFlag(NO);
-        if (socketFD >= 0) shutdown(socketFD, SHUT_RDWR);
-        XLRequestAutoGoDebugServiceStop();
-    });
-}
+static void XLSetRunning(BOOL running) {
+    xlRunGeneration++;
+    xlRunning = running;
+    XLWriteRunningPreference(running);
 
-static void XLSetRunning(BOOL requestedRunning) {
-    xlRequestedRunning = requestedRunning;
-    if (requestedRunning) {
-        XLStartWorker();
+    if (!running) {
+        XLSetStatus(nil);
         return;
     }
 
-    xlRunning = NO;
-    xlDiagnosticStatus = nil;
-    XLWritePreferenceRunning(NO);
-    XLStopWorker();
-    XLUpdateUI();
+    NSUInteger generation = xlRunGeneration;
+    XLSetStatus(@"等");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(XLRecognitionDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        XLPerformOneShotRecognition(generation);
+    });
 }
 
 static void XLInstallStatusOverlay(void) {
-    if (xlStatusWindow) {
-        XLUpdateUI();
-        return;
-    }
+    if (xlStatusWindow) return;
 
     CGRect bounds = UIScreen.mainScreen.bounds;
     UIWindowScene *activeScene = nil;
@@ -653,6 +115,7 @@ static void XLInstallStatusOverlay(void) {
     } else {
         window = [[XLStatusOverlayWindow alloc] initWithFrame:bounds];
     }
+
     window.windowLevel = UIWindowLevelAlert + 1000.0;
     window.backgroundColor = UIColor.clearColor;
     window.userInteractionEnabled = NO;
@@ -666,17 +129,16 @@ static void XLInstallStatusOverlay(void) {
     status.translatesAutoresizingMaskIntoConstraints = NO;
     status.userInteractionEnabled = NO;
     status.textAlignment = NSTextAlignmentCenter;
-    status.font = [UIFont boldSystemFontOfSize:20.0];
+    status.adjustsFontSizeToFitWidth = YES;
+    status.minimumScaleFactor = 0.60;
+    status.font = [UIFont boldSystemFontOfSize:18.0];
     status.textColor = UIColor.whiteColor;
-    status.backgroundColor = [UIColor colorWithRed:0.05 green:0.46 blue:0.94 alpha:0.82];
+    status.backgroundColor = [UIColor colorWithRed:0.05 green:0.46 blue:0.94 alpha:0.88];
     status.layer.cornerRadius = 27.0;
     status.layer.borderWidth = 1.5;
-    status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.80].CGColor;
-    status.layer.shadowColor = UIColor.blackColor.CGColor;
-    status.layer.shadowOpacity = 0.35;
-    status.layer.shadowRadius = 4.0;
-    status.layer.shadowOffset = CGSizeZero;
+    status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
     status.clipsToBounds = YES;
+    status.hidden = YES;
     [controller.view addSubview:status];
 
     UILayoutGuide *safeArea = controller.view.safeAreaLayoutGuide;
@@ -688,9 +150,19 @@ static void XLInstallStatusOverlay(void) {
     ]];
 
     xlStatusWindow = window;
-    xlHomeStatusLabel = status;
+    xlStatusLabel = status;
     window.hidden = NO;
-    XLUpdateUI();
+}
+
+static void XLLockCallback(CFNotificationCenterRef center, void *observer,
+                           CFStringRef name, const void *object,
+                           CFDictionaryRef userInfo) {
+    (void)center;
+    (void)observer;
+    (void)name;
+    (void)object;
+    (void)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(NO); });
 }
 
 static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *observer,
@@ -704,23 +176,32 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
 
     CFPropertyListRef value = CFPreferencesCopyAppValue(
         CFSTR(XLRunningPreferenceKey), CFSTR(XLPreferenceDomain));
-    BOOL requestedRunning = value && CFEqual(value, kCFBooleanTrue);
+    BOOL running = value && CFEqual(value, kCFBooleanTrue);
     if (value) CFRelease(value);
-    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(requestedRunning); });
+    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
 }
 
 __attribute__((constructor))
 static void XingLanSwipeInit(void) {
     @autoreleasepool {
-        NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
-        if (![bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
+        if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
+            return;
+        }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            xlWorkerQueue = dispatch_queue_create(
-                "com.jibeib.xinglanswipe.autogo", DISPATCH_QUEUE_SERIAL);
-            XLWriteWorkerFlag(NO);
-            XLWritePreferenceRunning(NO);
+            xlDetector = [XLBackIconDetector new];
+            xlRecognitionQueue = dispatch_queue_create(
+                "com.jibeib.xinglanswipe.native-vision", DISPATCH_QUEUE_SERIAL);
             XLInstallStatusOverlay();
+            XLSetRunning(NO);
+
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL,
+                XLLockCallback,
+                CFSTR("com.apple.springboard.lockcomplete"),
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
                 NULL,
@@ -728,7 +209,8 @@ static void XingLanSwipeInit(void) {
                 CFSTR(XLControlCenterStateNotification),
                 NULL,
                 CFNotificationSuspensionBehaviorDeliverImmediately);
-            NSLog(@"[XingLanSwipe] controller loaded; AutoGo worker is stopped");
+
+            NSLog(@"[XingLanSwipe] native one-shot Vision OCR test loaded");
         });
     }
 }

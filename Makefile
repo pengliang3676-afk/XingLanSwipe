@@ -4,9 +4,9 @@ TARGET = iphone:clang:latest:15.0
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = XingLanSwipe
-XingLanSwipe_FILES = Tweak.xm
+XingLanSwipe_FILES = Tweak.xm XLBackIconDetector.m
 XingLanSwipe_CFLAGS = -fobjc-arc -Wall -Wextra
-XingLanSwipe_FRAMEWORKS = UIKit Foundation
+XingLanSwipe_FRAMEWORKS = UIKit Foundation Vision
 
 BUNDLE_NAME = XingLanSwipeModule
 XingLanSwipeModule_FILES = ControlCenterModule/XingLanSwipeModule.m
@@ -18,14 +18,3 @@ XingLanSwipeModule_LDFLAGS = -undefined dynamic_lookup
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/bundle.mk
-
-ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
-TOOL_NAME = XingLanSwipeRootHideDaemon
-XingLanSwipeRootHideDaemon_FILES = RootHideDaemon.m
-XingLanSwipeRootHideDaemon_INSTALL_PATH = /usr/libexec
-XingLanSwipeRootHideDaemon_CFLAGS = -fobjc-arc -Wall -Wextra
-XingLanSwipeRootHideDaemon_FRAMEWORKS = Foundation CoreFoundation
-XingLanSwipeRootHideDaemon_LIBRARIES = proc
-XingLanSwipeRootHideDaemon_CODESIGN_FLAGS = -SRootHideDaemon.entitlements
-include $(THEOS_MAKE_PATH)/tool.mk
-endif
