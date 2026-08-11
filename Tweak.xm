@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
+#import <spawn.h>
 #import <signal.h>
 #import <arpa/inet.h>
 #import <fcntl.h>
@@ -11,7 +12,10 @@
 #import <errno.h>
 #import <string.h>
 #import <unistd.h>
+#import <objc/message.h>
 #import "XingLanSwipeShared.h"
+
+extern char **environ;
 
 static BOOL xlRunning = NO;
 static BOOL xlRequestedRunning = NO;
@@ -104,6 +108,114 @@ static int XLConnectAutoGoService(void) {
     return socketFD;
 }
 
+static void XLRequestAutoGoDebugService(void);
+
+static id XLCallObject(id target, SEL selector) {
+    if (!target || !selector || ![target respondsToSelector:selector]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(target, selector);
+}
+
+static id XLCallObjectWithObject(id target, SEL selector, id argument) {
+    if (!target || !selector || ![target respondsToSelector:selector]) return nil;
+    return ((id (*)(id, SEL, id))objc_msgSend)(target, selector, argument);
+}
+
+static NSString *XLValidAutoGoBundlePath(NSString *bundlePath) {
+    if (bundlePath.length == 0) return nil;
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSArray<NSString *> *required = @[@"agoverlayd", @"floatball", @"Runtime"];
+    for (NSString *item in required) {
+        NSString *path = [bundlePath stringByAppendingPathComponent:item];
+        BOOL isDirectory = NO;
+        if (![fileManager fileExistsAtPath:path isDirectory:&isDirectory]) return nil;
+        if (![item isEqualToString:@"Runtime"] &&
+            ![fileManager isExecutableFileAtPath:path]) return nil;
+        if ([item isEqualToString:@"Runtime"] && !isDirectory) return nil;
+    }
+    return bundlePath;
+}
+
+static NSString *XLFindAutoGoBundlePath(void) {
+    NSString *bundleIdentifier = [NSString stringWithUTF8String:XLAutoGoBundleIdentifier];
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    id proxy = XLCallObjectWithObject(
+        proxyClass,
+        NSSelectorFromString(@"applicationProxyForIdentifier:"),
+        bundleIdentifier);
+    NSURL *bundleURL = XLCallObject(proxy, NSSelectorFromString(@"bundleURL"));
+    NSString *resolved = XLValidAutoGoBundlePath(bundleURL.path);
+    if (resolved) return resolved;
+
+    // TrollStore uses a changing UUID directory. Only use this scan if
+    // LSApplicationProxy does not expose the bundle URL on the current system.
+    NSString *applicationsRoot = @"/var/containers/Bundle/Application";
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSArray<NSString *> *containers =
+        [fileManager contentsOfDirectoryAtPath:applicationsRoot error:nil];
+    for (NSString *containerName in containers) {
+        NSString *containerPath = [applicationsRoot stringByAppendingPathComponent:containerName];
+        NSArray<NSString *> *items =
+            [fileManager contentsOfDirectoryAtPath:containerPath error:nil];
+        for (NSString *item in items) {
+            if (![item.pathExtension.lowercaseString isEqualToString:@"app"]) continue;
+            NSString *bundlePath = [containerPath stringByAppendingPathComponent:item];
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                [bundlePath stringByAppendingPathComponent:@"Info.plist"]];
+            if (![info[@"CFBundleIdentifier"] isEqualToString:bundleIdentifier]) continue;
+            resolved = XLValidAutoGoBundlePath(bundlePath);
+            if (resolved) return resolved;
+        }
+    }
+    return nil;
+}
+
+static BOOL XLSpawnAutoGoService(NSString *bundlePath, NSString *executableName) {
+    NSString *executable = [bundlePath stringByAppendingPathComponent:executableName];
+    NSString *runtime = [bundlePath stringByAppendingPathComponent:@"Runtime"];
+    const char *path = executable.fileSystemRepresentation;
+    const char *runtimePath = runtime.fileSystemRepresentation;
+    if (!path || !runtimePath) return NO;
+
+    char *const arguments[] = {
+        (char *)path,
+        (char *)runtimePath,
+        NULL,
+    };
+    pid_t pid = 0;
+    int result = posix_spawn(&pid, path, NULL, NULL, arguments, environ);
+    NSLog(@"[XingLanSwipe] AutoGo service %@ spawn result=%d pid=%d",
+          executableName, result, pid);
+    return result == 0 && pid > 0;
+}
+
+static BOOL XLStartAutoGoServicesOnDemand(void) {
+    int socketFD = XLConnectAutoGoService();
+    if (socketFD >= 0) {
+        close(socketFD);
+        return YES;
+    }
+
+    // A running floatball may only need the debug listener enabled.
+    XLRequestAutoGoDebugService();
+    usleep(350 * 1000);
+    socketFD = XLConnectAutoGoService();
+    if (socketFD >= 0) {
+        close(socketFD);
+        return YES;
+    }
+
+    NSString *bundlePath = XLFindAutoGoBundlePath();
+    if (bundlePath.length == 0) {
+        NSLog(@"[XingLanSwipe] TrollStore AutoGo bundle was not found");
+        return NO;
+    }
+
+    BOOL overlayStarted = XLSpawnAutoGoService(bundlePath, @"agoverlayd");
+    usleep(250 * 1000);
+    BOOL floatballStarted = XLSpawnAutoGoService(bundlePath, @"floatball");
+    return overlayStarted && floatballStarted;
+}
+
 static void XLRequestAutoGoDebugService(void) {
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
@@ -112,6 +224,7 @@ static void XLRequestAutoGoDebugService(void) {
 }
 
 static BOOL XLWaitForAutoGoService(void) {
+    (void)XLStartAutoGoServicesOnDemand();
     for (NSUInteger attempt = 0; attempt < 50; attempt++) {
         int socketFD = XLConnectAutoGoService();
         if (socketFD >= 0) {
@@ -167,6 +280,13 @@ static BOOL XLReadOKFrame(int socketFD) {
 }
 
 static NSString *XLWorkerResourcePath(void) {
+    NSBundle *moduleBundle = [NSBundle bundleWithIdentifier:
+        [NSString stringWithUTF8String:XLControlCenterBundleIdentifier]];
+    NSString *bundledWorker = [moduleBundle pathForResource:@"AutoGoWorker" ofType:nil];
+    if ([NSFileManager.defaultManager isReadableFileAtPath:bundledWorker]) {
+        return bundledWorker;
+    }
+
     NSArray<NSString *> *candidates = @[
         @"/var/jb/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/AutoGoWorker",
         @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/AutoGoWorker",

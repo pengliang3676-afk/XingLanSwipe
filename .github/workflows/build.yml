@@ -15,6 +15,7 @@ on:
       - "XingLanSwipe.plist"
       - "Makefile"
       - "control"
+      - "control.roothide"
       - "layout/**"
       - ".github/workflows/build.yml"
 
@@ -23,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scheme: [rootless]
+        scheme: [roothide]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +49,11 @@ jobs:
         run: |
           echo "THEOS=$GITHUB_WORKSPACE/theos-roothide" >> "$GITHUB_ENV"
           echo "THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}" >> "$GITHUB_ENV"
+
+      - name: Select RootHide package layout
+        run: |
+          cp control.roothide control
+          rm -rf layout/DEBIAN layout/Library/LaunchDaemons
 
       - name: Build package
         run: gmake clean package FINALPACKAGE=1

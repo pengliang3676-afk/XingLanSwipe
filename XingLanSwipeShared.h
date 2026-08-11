@@ -6,6 +6,8 @@
 #define XLWorkerRunFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker"
 
 #define XLAutoGoDebugEnableNotification "com.autogo.floatball.debug.enable_request"
+#define XLAutoGoBundleIdentifier "com.auto.go"
+#define XLControlCenterBundleIdentifier "com.jibeib.xinglanswipe.module"
 
 #define XLAutoGoServicePort 8820
 #define XLMaximumAutoGoFrameSize (16 * 1024 * 1024)
