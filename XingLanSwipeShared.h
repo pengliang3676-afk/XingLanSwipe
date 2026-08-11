@@ -15,6 +15,8 @@
 #define XLMaximumAutoGoFrameSize (16 * 1024 * 1024)
 #define XLAutoGoPushCommand 1
 #define XLAutoGoAckCommand 2
+#define XLAutoGoSyncDoneCommand 3
+#define XLAutoGoSyncDoneAckCommand 4
 #define XLAutoGoRunCommand 5
 #define XLAutoGoStopCommand 6
 #define XLAutoGoLogCommand 7

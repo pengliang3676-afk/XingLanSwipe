@@ -283,12 +283,21 @@ static BOOL XLReadFrame(int socketFD, uint8_t *command, NSData **payload) {
     return YES;
 }
 
-static BOOL XLReadOKFrame(int socketFD) {
+static BOOL XLReadExpectedOKFrame(int socketFD, uint8_t expectedCommand,
+                                  NSString *stage) {
     uint8_t command = 0;
     NSData *payload = nil;
-    if (!XLReadFrame(socketFD, &command, &payload)) return NO;
+    if (!XLReadFrame(socketFD, &command, &payload)) {
+        NSLog(@"[XingLanSwipe] AutoGo %@ response missing", stage);
+        return NO;
+    }
+
+    NSString *payloadText = [[NSString alloc] initWithData:payload
+                                                   encoding:NSUTF8StringEncoding];
+    NSLog(@"[XingLanSwipe] AutoGo %@ response command=%u payload=%@",
+          stage, command, payloadText ?: payload.description);
     static const uint8_t expected[] = {'O', 'K'};
-    return command == XLAutoGoAckCommand &&
+    return command == expectedCommand &&
            payload.length == sizeof(expected) &&
            memcmp(payload.bytes, expected, sizeof(expected)) == 0;
 }
@@ -311,7 +320,7 @@ static NSString *XLWorkerResourcePath(void) {
     return nil;
 }
 
-static BOOL __attribute__((unused)) XLUploadWorker(void) {
+static BOOL XLUploadWorkerOnSocket(int socketFD) {
     xlUploadFailureCode = nil;
     NSString *workerPath = XLWorkerResourcePath();
     if (!workerPath) {
@@ -331,15 +340,6 @@ static BOOL __attribute__((unused)) XLUploadWorker(void) {
         (uint64_t)workerStat.st_size > UINT32_MAX - 7) {
         close(workerFD);
         xlUploadFailureCode = @"E22";
-        return NO;
-    }
-
-    int socketFD = XLConnectAutoGoService();
-    if (socketFD < 0) {
-        close(workerFD);
-        NSLog(@"[XingLanSwipe] AutoGo service 127.0.0.1:%d is unavailable",
-              XLAutoGoServicePort);
-        xlUploadFailureCode = @"E23";
         return NO;
     }
 
@@ -369,14 +369,10 @@ static BOOL __attribute__((unused)) XLUploadWorker(void) {
 
     if (!success) {
         xlUploadFailureCode = @"E24";
-    } else if (!XLReadOKFrame(socketFD)) {
-        // Some AutoGo builds close the upload connection after persisting the
-        // complete file instead of returning an ACK frame. The subsequent RUN
-        // command is the authoritative integrity check on those devices.
+    } else if (!XLReadExpectedOKFrame(socketFD, XLAutoGoAckCommand, @"upload")) {
         xlUploadFailureCode = @"E25";
-        NSLog(@"[XingLanSwipe] upload ACK missing; continuing to RUN verification");
+        success = NO;
     }
-    close(socketFD);
     NSLog(@"[XingLanSwipe] AutoGo worker upload %@", success ? @"succeeded" : @"failed");
     return success;
 }
@@ -395,32 +391,49 @@ static void XLResetAutoGoDebugService(void) {
     (void)XLWaitForAutoGoService();
 }
 
-static BOOL XLUploadWorkerWithRetry(void) {
+static int XLPrepareWorkerSessionWithRetry(void) {
     for (NSUInteger attempt = 1;
          attempt <= 3 && xlRequestedRunning;
          attempt++) {
         // The listener can accept TCP slightly before its upload handler is
         // ready on a newly installed device. Give it time to finish starting.
         usleep(attempt == 1 ? 2000 * 1000 : 2500 * 1000);
-        if (XLUploadWorker()) return YES;
+        int socketFD = XLConnectAutoGoService();
+        if (socketFD < 0) {
+            xlUploadFailureCode = @"E23";
+        } else if (XLUploadWorkerOnSocket(socketFD)) {
+            // AutoGo's official client keeps one connection for PUSH,
+            // SYNC_DONE and RUN. Some devices reject RUN when SYNC_DONE is
+            // omitted or when a new connection is opened between commands.
+            BOOL syncSent = XLSendFrame(socketFD, XLAutoGoSyncDoneCommand,
+                                        NULL, 0);
+            BOOL syncAccepted = syncSent &&
+                XLReadExpectedOKFrame(socketFD,
+                                      XLAutoGoSyncDoneAckCommand,
+                                      @"sync");
+            if (syncAccepted) return socketFD;
+            xlUploadFailureCode = @"E30";
+            close(socketFD);
+        } else {
+            close(socketFD);
+        }
 
-        NSLog(@"[XingLanSwipe] AutoGo worker upload attempt %lu failed",
-              (unsigned long)attempt);
+        NSLog(@"[XingLanSwipe] AutoGo worker prepare attempt %lu failed code=%@",
+              (unsigned long)attempt,
+              xlUploadFailureCode ?: @"unknown");
         if (attempt < 3 && xlRequestedRunning) {
             XLResetAutoGoDebugService();
         }
     }
-    return NO;
+    return -1;
 }
 
-static BOOL __attribute__((unused)) XLRunWorkerSession(void) {
-    int socketFD = XLConnectAutoGoService();
+static BOOL XLRunWorkerSession(int socketFD) {
     if (socketFD < 0) return NO;
-
     static const char runMode[] = "bin";
     if (!XLSendFrame(socketFD, XLAutoGoRunCommand,
                      runMode, (uint32_t)(sizeof(runMode) - 1)) ||
-        !XLReadOKFrame(socketFD)) {
+        !XLReadExpectedOKFrame(socketFD, XLAutoGoAckCommand, @"run")) {
         close(socketFD);
         return NO;
     }
@@ -509,7 +522,8 @@ static void XLStartWorker(void) {
             });
             return;
         }
-        if (!XLUploadWorkerWithRetry()) {
+        int workerSocket = XLPrepareWorkerSessionWithRetry();
+        if (workerSocket < 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlStartInProgress = NO;
                 xlRequestedRunning = NO;
@@ -521,7 +535,11 @@ static void XLStartWorker(void) {
             });
             return;
         }
-        if (!xlRequestedRunning || !XLRunWorkerSession()) {
+        if (!xlRequestedRunning) {
+            close(workerSocket);
+            return;
+        }
+        if (!XLRunWorkerSession(workerSocket)) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlStartInProgress = NO;
                 if (xlRequestedRunning) {
