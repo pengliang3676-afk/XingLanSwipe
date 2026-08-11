@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.3.5
+Version: 2.3.6
 Architecture: iphoneos-arm64e
-Description: RootHide 专用修复版。为 AutoGo 工作程序补齐 RootHide 执行权限，并显示具体启动错误码。
+Description: RootHide 专用版。由 RootHide 原生后台服务启动、停止并自动重启 AutoGo 正式脚本。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks

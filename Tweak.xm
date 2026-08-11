@@ -22,10 +22,6 @@ static BOOL xlRequestedRunning = NO;
 static BOOL xlStartInProgress = NO;
 static int xlRunSocket = -1;
 static dispatch_queue_t xlWorkerQueue;
-#if XL_ROOT_HIDE
-static pid_t xlDirectWorkerPID = 0;
-static dispatch_source_t xlDirectWorkerExitSource;
-#endif
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 static NSString *xlDiagnosticStatus;
@@ -310,112 +306,31 @@ static NSString *XLWorkerResourcePath(void) {
 }
 
 #if XL_ROOT_HIDE
-static BOOL XLDirectWorkerIsAlive(void) {
-    if (xlDirectWorkerPID <= 0) return NO;
-    if (kill(xlDirectWorkerPID, 0) == 0) return YES;
-    return errno == EPERM;
-}
-
-static void XLCleanupDirectWorkerState(void) {
-    xlDirectWorkerPID = 0;
-    if (xlDirectWorkerExitSource) {
-        dispatch_source_cancel(xlDirectWorkerExitSource);
-        xlDirectWorkerExitSource = nil;
-    }
-}
-
-static void XLHandleDirectWorkerExit(pid_t pid) {
-    if (pid != xlDirectWorkerPID) return;
-    XLCleanupDirectWorkerState();
-    xlStartInProgress = NO;
-    if (xlRequestedRunning) {
-        xlRequestedRunning = NO;
-        xlRunning = NO;
-        XLWritePreferenceRunning(NO);
-        XLWriteWorkerFlag(NO);
-        xlDiagnosticStatus = @"退";
-        XLUpdateUI();
-        NSLog(@"[XingLanSwipe] RootHide direct worker exited unexpectedly");
-    }
-}
-
-static NSString *XLPrepareRootHideWorker(NSString *bundlePath) {
-    NSString *runtime = [bundlePath stringByAppendingPathComponent:@"Runtime"];
-    NSString *destination = [runtime stringByAppendingPathComponent:@"xinglan_worker"];
-    NSString *source = XLWorkerResourcePath();
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSError *error = nil;
-
-    if (source.length > 0) {
-        [fileManager removeItemAtPath:destination error:nil];
-        if ([fileManager copyItemAtPath:source toPath:destination error:&error] &&
-            chmod(destination.fileSystemRepresentation, 0755) == 0 &&
-            [fileManager isExecutableFileAtPath:destination]) {
-            return destination;
-        }
-        NSLog(@"[XingLanSwipe] RootHide worker staging failed: %@",
-              error.localizedDescription ?: @"chmod failed");
-    }
-
-    // The supplied TrollStore IPA also contains the same formal worker as
-    // Runtime/app, so it is a safe fallback if its app bundle is read-only.
-    NSString *fallback = [runtime stringByAppendingPathComponent:@"app"];
-    return [fileManager isExecutableFileAtPath:fallback] ? fallback : nil;
-}
-
 static BOOL XLStartRootHideDirectWorker(void) {
-    if (XLDirectWorkerIsAlive()) return YES;
-    XLCleanupDirectWorkerState();
+    static NSString *const statusPath =
+        @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status";
+    NSString *lastError = nil;
+    NSCharacterSet *whitespace = NSCharacterSet.whitespaceAndNewlineCharacterSet;
 
-    NSString *bundlePath = XLFindAutoGoBundlePath();
-    if (bundlePath.length == 0) {
-        XLSetDiagnosticStatus(@"E1");
-        NSLog(@"[XingLanSwipe] RootHide TrollStore AutoGo bundle was not found");
-        return NO;
-    }
-    NSString *executable = XLPrepareRootHideWorker(bundlePath);
-    if (executable.length == 0) {
-        XLSetDiagnosticStatus(@"E2");
-        NSLog(@"[XingLanSwipe] RootHide direct worker is unavailable");
-        return NO;
-    }
-
-    const char *path = executable.fileSystemRepresentation;
-    char *const arguments[] = {(char *)path, NULL};
-    pid_t pid = 0;
-    int result = posix_spawn(&pid, path, NULL, NULL, arguments, environ);
-    if (result != 0 || pid <= 0) {
-        XLSetDiagnosticStatus([NSString stringWithFormat:@"E%d", result]);
-        NSLog(@"[XingLanSwipe] RootHide direct worker spawn failed result=%d", result);
-        return NO;
-    }
-
-    xlDirectWorkerPID = pid;
-    xlDirectWorkerExitSource = dispatch_source_create(
-        DISPATCH_SOURCE_TYPE_PROC,
-        (uintptr_t)pid,
-        DISPATCH_PROC_EXIT,
-        dispatch_get_main_queue());
-    if (xlDirectWorkerExitSource) {
-        dispatch_source_set_event_handler(xlDirectWorkerExitSource, ^{
-            XLHandleDirectWorkerExit(pid);
-        });
-        dispatch_resume(xlDirectWorkerExitSource);
-    }
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!xlRequestedRunning) {
-            kill(pid, SIGTERM);
-            return;
+    // The RootHide launch daemon watches the worker flag. Wait until it has
+    // staged and started the signed AutoGo worker, instead of spawning from
+    // SpringBoard (which RootHide rejects on affected devices).
+    for (NSUInteger attempt = 0; attempt < 20; attempt++) {
+        NSString *status = [NSString stringWithContentsOfFile:statusPath
+                                                     encoding:NSUTF8StringEncoding
+                                                        error:nil];
+        status = [status stringByTrimmingCharactersInSet:whitespace];
+        if ([status isEqualToString:@"RUNNING"]) return YES;
+        if ([status hasPrefix:@"E"] || [status hasPrefix:@"EXIT"]) {
+            lastError = status;
         }
-        xlStartInProgress = NO;
-        xlRunning = YES;
-        xlDiagnosticStatus = nil;
-        XLWritePreferenceRunning(YES);
-        XLUpdateUI();
-        NSLog(@"[XingLanSwipe] RootHide direct worker started pid=%d", pid);
-    });
-    return YES;
+        usleep(500 * 1000);
+    }
+
+    XLSetDiagnosticStatus(lastError.length > 0 ? lastError : @"ES");
+    NSLog(@"[XingLanSwipe] RootHide daemon did not start worker, status=%@",
+          lastError ?: @"missing");
+    return NO;
 }
 #endif
 
@@ -611,11 +526,7 @@ static void XLStartWorker(void) {
 static void XLStopWorker(void) {
     XLWriteWorkerFlag(NO);
 #if XL_ROOT_HIDE
-    pid_t pid = xlDirectWorkerPID;
-    if (pid > 0 && kill(pid, SIGTERM) != 0 && errno != ESRCH) {
-        NSLog(@"[XingLanSwipe] RootHide direct worker stop failed pid=%d errno=%d",
-              pid, errno);
-    }
+    // The RootHide launch daemon observes the flag and terminates its child.
 #else
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         XLSendStopCommand();

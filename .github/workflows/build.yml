@@ -16,8 +16,10 @@ on:
       - "Makefile"
       - "control"
       - "control.roothide"
-      - "RootHideWorker.entitlements"
+      - "RootHideDaemon.entitlements"
+      - "RootHideDaemon.m"
       - "layout/**"
+      - "layout.roothide/**"
       - ".github/workflows/build.yml"
 
 jobs:
@@ -55,14 +57,9 @@ jobs:
         run: |
           cp control.roothide control
           rm -rf layout/DEBIAN layout/Library/LaunchDaemons
-
-      - name: Sign RootHide AutoGo worker
-        run: |
-          test -f ControlCenterModule/Resources/AutoGoWorker
-          ldid -M -SRootHideWorker.entitlements ControlCenterModule/Resources/AutoGoWorker
-          ldid -e ControlCenterModule/Resources/AutoGoWorker > /tmp/xinglan-worker-entitlements.plist
-          grep -q "platform-application" /tmp/xinglan-worker-entitlements.plist
-          grep -q "com.apple.private.security.no-sandbox" /tmp/xinglan-worker-entitlements.plist
+          rm -f ControlCenterModule/Resources/AutoGoWorker
+          cp -R layout.roothide/. layout/
+          chmod 0755 layout/DEBIAN/postinst layout/DEBIAN/prerm
 
       - name: Build package
         run: gmake clean package FINALPACKAGE=1
