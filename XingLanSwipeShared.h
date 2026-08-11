@@ -4,6 +4,9 @@
 #define XLRunningPreferenceKey "running"
 #define XLControlCenterStateNotification "com.jibeib.xinglanswipe.state-changed"
 #define XLWorkerRunFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker"
+#define XLWorkerCleanupRequestPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.cleanup-request"
+#define XLWorkerCleanupAckPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.cleanup-ack"
+#define XLRootHideDaemonStatusPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status"
 
 #define XLAutoGoDebugEnableNotification "com.autogo.floatball.debug.enable_request"
 #define XLAutoGoDebugDisableNotification "com.autogo.floatball.debug.disable_request"

@@ -25,6 +25,7 @@ XingLanSwipeRootHideDaemon_FILES = RootHideDaemon.m
 XingLanSwipeRootHideDaemon_INSTALL_PATH = /usr/libexec
 XingLanSwipeRootHideDaemon_CFLAGS = -fobjc-arc -Wall -Wextra
 XingLanSwipeRootHideDaemon_FRAMEWORKS = Foundation CoreFoundation
+XingLanSwipeRootHideDaemon_LIBRARIES = proc
 XingLanSwipeRootHideDaemon_CODESIGN_FLAGS = -SRootHideDaemon.entitlements
 include $(THEOS_MAKE_PATH)/tool.mk
 endif

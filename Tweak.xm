@@ -380,23 +380,50 @@ static BOOL XLUploadWorkerOnSocket(int socketFD) {
     return success;
 }
 
-static void XLStopExistingWorkerBeforeUpload(void) {
-    int socketFD = XLConnectAutoGoService();
-    if (socketFD >= 0) {
-        BOOL sent = XLSendFrame(socketFD, XLAutoGoStopCommand, NULL, 0);
-        close(socketFD);
-        NSLog(@"[XingLanSwipe] pre-upload STOP %@",
-              sent ? @"sent" : @"failed");
+static BOOL XLRequestRootHideWorkerCleanup(void) {
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSString *statusPath =
+        [NSString stringWithUTF8String:XLRootHideDaemonStatusPath];
+    if (![fileManager fileExistsAtPath:statusPath]) return YES;
+
+    NSString *requestPath =
+        [NSString stringWithUTF8String:XLWorkerCleanupRequestPath];
+    NSString *ackPath =
+        [NSString stringWithUTF8String:XLWorkerCleanupAckPath];
+    NSString *token = NSUUID.UUID.UUIDString;
+    NSError *error = nil;
+    if (![token writeToFile:requestPath
+                 atomically:YES
+                   encoding:NSUTF8StringEncoding
+                      error:&error]) {
+        NSLog(@"[XingLanSwipe] stale worker cleanup request failed: %@",
+              error.localizedDescription ?: @"unknown error");
+        return NO;
+    }
+    chmod(requestPath.fileSystemRepresentation, 0644);
+
+    for (NSUInteger attempt = 0; attempt < 60 && xlRequestedRunning; attempt++) {
+        NSString *ack = [NSString stringWithContentsOfFile:ackPath
+                                                   encoding:NSUTF8StringEncoding
+                                                      error:nil];
+        ack = [ack stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if ([ack isEqualToString:token]) {
+            NSLog(@"[XingLanSwipe] stale AutoGo worker cleanup acknowledged");
+            return YES;
+        }
+        usleep(100 * 1000);
     }
 
-    // AutoGo opens Runtime/debug with write access during PUSH. If the old
-    // binary is still executing, iOS returns ETXTBSY and AutoGo reports
-    // ERR:open failed. Keep the service enabled while the old process exits.
-    usleep(1500 * 1000);
+    NSLog(@"[XingLanSwipe] stale AutoGo worker cleanup timed out");
+    return NO;
 }
 
 static int XLPrepareWorkerSessionWithRetry(void) {
-    XLStopExistingWorkerBeforeUpload();
+    if (!XLRequestRootHideWorkerCleanup()) {
+        xlUploadFailureCode = @"E26";
+        return -1;
+    }
     for (NSUInteger attempt = 1;
          attempt <= 3 && xlRequestedRunning;
          attempt++) {
@@ -429,7 +456,10 @@ static int XLPrepareWorkerSessionWithRetry(void) {
               xlUploadFailureCode ?: @"unknown");
         if (attempt < 3 && xlRequestedRunning) {
             if ([xlLastAutoGoResponse isEqualToString:@"ERR:open failed"]) {
-                XLStopExistingWorkerBeforeUpload();
+                if (!XLRequestRootHideWorkerCleanup()) {
+                    xlUploadFailureCode = @"E26";
+                    break;
+                }
             } else {
                 XLRequestAutoGoDebugService();
                 (void)XLWaitForAutoGoService();

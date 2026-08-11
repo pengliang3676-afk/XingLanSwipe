@@ -4,10 +4,12 @@
 #import <errno.h>
 #import <fcntl.h>
 #import <limits.h>
+#import <libproc.h>
 #import <signal.h>
 #import <spawn.h>
 #import <sys/socket.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
 #import <sys/wait.h>
 #import <string.h>
 #import <unistd.h>
@@ -18,6 +20,10 @@ static NSString *const XLStatusPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status";
 static NSString *const XLFlagPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker";
+static NSString *const XLCleanupRequestPath =
+    @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.cleanup-request";
+static NSString *const XLCleanupAckPath =
+    @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.cleanup-ack";
 static NSString *const XLServiceLogPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.autogo-service.log";
 static NSString *const XLAutoGoBundleIdentifier = @"com.auto.go";
@@ -33,6 +39,7 @@ static volatile sig_atomic_t XLShouldStop = 0;
 static pid_t XLOverlayPID = 0;
 static pid_t XLFloatballPID = 0;
 static NSString *XLLastStatus;
+static NSString *XLLastCleanupToken;
 
 static void XLSignalHandler(int signalNumber) {
     (void)signalNumber;
@@ -119,6 +126,106 @@ static NSString *XLFindAutoGoBundle(void) {
         }
     }
     return nil;
+}
+
+static NSArray<NSNumber *> *XLAllProcessIdentifiers(void) {
+    int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t length = 0;
+    if (sysctl(mib, 4, NULL, &length, NULL, 0) != 0 || length == 0) {
+        return @[];
+    }
+
+    void *buffer = malloc(length);
+    if (!buffer) return @[];
+    if (sysctl(mib, 4, buffer, &length, NULL, 0) != 0) {
+        free(buffer);
+        return @[];
+    }
+
+    NSUInteger count = length / sizeof(struct kinfo_proc);
+    struct kinfo_proc *processes = buffer;
+    NSMutableArray<NSNumber *> *identifiers =
+        [NSMutableArray arrayWithCapacity:count];
+    for (NSUInteger index = 0; index < count; index++) {
+        pid_t pid = processes[index].kp_proc.p_pid;
+        if (pid > 1 && pid != getpid()) [identifiers addObject:@(pid)];
+    }
+    free(buffer);
+    return identifiers;
+}
+
+static BOOL XLProcessIsAutoGoDebug(pid_t pid, NSString *debugPath) {
+    char processPath[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    int length = proc_pidpath(pid, processPath, sizeof(processPath));
+    if (length <= 0) return NO;
+    NSString *path = [NSString stringWithUTF8String:processPath];
+    return [path isEqualToString:debugPath] ||
+           [path hasSuffix:@"/com.auto.go.app/Runtime/debug"] ||
+           [path hasSuffix:@"/AutoGoRunner.app/Runtime/debug"];
+}
+
+static NSUInteger XLTerminateStaleAutoGoWorkers(NSString *debugPath) {
+    NSMutableArray<NSNumber *> *targets = [NSMutableArray array];
+    for (NSNumber *identifier in XLAllProcessIdentifiers()) {
+        if (XLProcessIsAutoGoDebug(identifier.intValue, debugPath)) {
+            [targets addObject:identifier];
+            kill(identifier.intValue, SIGTERM);
+        }
+    }
+
+    for (NSUInteger attempt = 0; attempt < 15 && targets.count > 0; attempt++) {
+        for (NSInteger index = (NSInteger)targets.count - 1; index >= 0; index--) {
+            pid_t pid = targets[(NSUInteger)index].intValue;
+            if (kill(pid, 0) != 0 && errno == ESRCH) {
+                [targets removeObjectAtIndex:(NSUInteger)index];
+            }
+        }
+        if (targets.count > 0) usleep(100 * 1000);
+    }
+
+    for (NSNumber *identifier in targets) {
+        kill(identifier.intValue, SIGKILL);
+    }
+    if (targets.count > 0) usleep(200 * 1000);
+    return targets.count;
+}
+
+static void XLHandleCleanupRequest(void) {
+    NSString *token = [NSString stringWithContentsOfFile:XLCleanupRequestPath
+                                                 encoding:NSUTF8StringEncoding
+                                                    error:nil];
+    token = [token stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (token.length == 0 || [token isEqualToString:XLLastCleanupToken]) return;
+    XLLastCleanupToken = [token copy];
+
+    NSString *bundlePath = XLFindAutoGoBundle();
+    if (!bundlePath) {
+        XLWriteStatus(@"CLEANUP_AUTO_GO_NOT_FOUND");
+        return;
+    }
+
+    NSString *debugPath = [[bundlePath stringByAppendingPathComponent:@"Runtime"]
+        stringByAppendingPathComponent:@"debug"];
+    NSUInteger killed = XLTerminateStaleAutoGoWorkers(debugPath);
+    int unlinkResult = unlink(debugPath.fileSystemRepresentation);
+    if (unlinkResult != 0 && errno != ENOENT) {
+        XLWriteStatus([NSString stringWithFormat:@"CLEANUP_UNLINK_E%d", errno]);
+        return;
+    }
+
+    NSError *error = nil;
+    BOOL acknowledged = [token writeToFile:XLCleanupAckPath
+                                atomically:YES
+                                  encoding:NSUTF8StringEncoding
+                                     error:&error];
+    if (!acknowledged) {
+        XLWriteStatus(@"CLEANUP_ACK_FAILED");
+        return;
+    }
+    chmod(XLCleanupAckPath.fileSystemRepresentation, 0644);
+    XLWriteStatus([NSString stringWithFormat:@"CLEANUP_OK_%lu",
+        (unsigned long)killed]);
 }
 
 static void XLReapPID(pid_t *pid) {
@@ -254,6 +361,8 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            XLHandleCleanupRequest();
+
             XLReapPID(&XLOverlayPID);
             XLReapPID(&XLFloatballPID);
 
@@ -270,6 +379,7 @@ int main(int argc, char **argv) {
             for (NSUInteger tick = 0;
                  tick < ticks && !XLShouldStop && XLWorkerEnabled();
                  tick++) {
+                XLHandleCleanupRequest();
                 usleep(500 * 1000);
             }
         }
