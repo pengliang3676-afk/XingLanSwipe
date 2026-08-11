@@ -7,6 +7,7 @@
 #import <sys/wait.h>
 #import <errno.h>
 #import <unistd.h>
+#import <objc/message.h>
 #import "XingLanSwipeShared.h"
 
 extern char **environ;
@@ -62,6 +63,55 @@ static BOOL XLWorkerIsAlive(void) {
     return errno == EPERM;
 }
 
+static id XLCallObject(id target, SEL selector) {
+    if (!target || !selector || ![target respondsToSelector:selector]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(target, selector);
+}
+
+static id XLCallObjectWithObject(id target, SEL selector, id argument) {
+    if (!target || !selector || ![target respondsToSelector:selector]) return nil;
+    return ((id (*)(id, SEL, id))objc_msgSend)(target, selector, argument);
+}
+
+static NSString *XLWorkerPathInsideBundle(NSString *bundlePath) {
+    if (bundlePath.length == 0) return nil;
+    NSString *candidate = [bundlePath stringByAppendingPathComponent:@"Runtime/app"];
+    return [NSFileManager.defaultManager isExecutableFileAtPath:candidate] ? candidate : nil;
+}
+
+static NSString *XLFindWorkerByBundleIdentifier(void) {
+    NSString *bundleIdentifier = [NSString stringWithUTF8String:XLWorkerBundleIdentifier];
+
+    // TrollStore installs apps in a UUID directory. Resolve that directory by
+    // bundle identifier so the path remains valid after reinstalling AutoGo.
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    SEL proxySelector = NSSelectorFromString(@"applicationProxyForIdentifier:");
+    id proxy = XLCallObjectWithObject(proxyClass, proxySelector, bundleIdentifier);
+    NSURL *bundleURL = XLCallObject(proxy, NSSelectorFromString(@"bundleURL"));
+    NSString *resolved = XLWorkerPathInsideBundle(bundleURL.path);
+    if (resolved) return resolved;
+
+    // Fallback for systems where LSApplicationProxy does not expose bundleURL.
+    NSString *applicationsRoot = @"/var/containers/Bundle/Application";
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSArray<NSString *> *containers = [fileManager contentsOfDirectoryAtPath:applicationsRoot error:nil];
+    for (NSString *containerName in containers) {
+        NSString *containerPath = [applicationsRoot stringByAppendingPathComponent:containerName];
+        NSArray<NSString *> *items = [fileManager contentsOfDirectoryAtPath:containerPath error:nil];
+        for (NSString *item in items) {
+            if (![item.pathExtension.lowercaseString isEqualToString:@"app"]) continue;
+            NSString *bundlePath = [containerPath stringByAppendingPathComponent:item];
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                [bundlePath stringByAppendingPathComponent:@"Info.plist"]];
+            if (![info[@"CFBundleIdentifier"] isEqualToString:bundleIdentifier]) continue;
+            resolved = XLWorkerPathInsideBundle(bundlePath);
+            if (resolved) return resolved;
+        }
+    }
+
+    return nil;
+}
+
 static void XLCleanupWorkerState(void) {
     xlWorkerPID = 0;
     if (xlWorkerExitSource) {
@@ -94,9 +144,10 @@ static BOOL XLStartWorker(void) {
     }
     XLCleanupWorkerState();
 
-    NSString *executable = [NSString stringWithUTF8String:XLWorkerExecutablePath];
-    if (![NSFileManager.defaultManager isExecutableFileAtPath:executable]) {
-        NSLog(@"[XingLanSwipe] AutoGo worker missing or not executable: %@", executable);
+    NSString *executable = XLFindWorkerByBundleIdentifier();
+    if (executable.length == 0) {
+        NSLog(@"[XingLanSwipe] AutoGo worker missing for bundle: %s",
+              XLWorkerBundleIdentifier);
         return NO;
     }
     if (!XLWriteWorkerFlag(YES)) return NO;
