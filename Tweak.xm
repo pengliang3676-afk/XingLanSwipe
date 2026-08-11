@@ -425,7 +425,7 @@ static void __attribute__((unused)) XLSendStopCommand(void) {
 
 static void XLStartWorker(void) {
     if (xlRunning || xlStartInProgress) return;
-    xlDiagnosticStatus = @"启";
+    xlDiagnosticStatus = @"开";
     XLUpdateUI();
     if (!XLWriteWorkerFlag(YES)) {
         xlDiagnosticStatus = @"E0";
@@ -442,6 +442,7 @@ static void XLStartWorker(void) {
                 xlStartInProgress = NO;
                 xlRequestedRunning = NO;
                 xlRunning = NO;
+                xlDiagnosticStatus = @"E1";
                 XLWritePreferenceRunning(NO);
                 XLWriteWorkerFlag(NO);
                 XLUpdateUI();
@@ -453,6 +454,7 @@ static void XLStartWorker(void) {
                 xlStartInProgress = NO;
                 xlRequestedRunning = NO;
                 xlRunning = NO;
+                xlDiagnosticStatus = @"E2";
                 XLWritePreferenceRunning(NO);
                 XLWriteWorkerFlag(NO);
                 XLUpdateUI();
@@ -467,6 +469,7 @@ static void XLStartWorker(void) {
                     XLWritePreferenceRunning(NO);
                 }
                 xlRunning = NO;
+                xlDiagnosticStatus = @"E3";
                 XLWriteWorkerFlag(NO);
                 XLUpdateUI();
             });
