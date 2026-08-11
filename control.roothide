@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.3.7
+Version: 2.3.8
 Architecture: iphoneos-arm64e
-Description: RootHide 专用自包含版。内置 AutoGo 正式运行环境，由 RootHide 原生后台服务启动、停止并自动重启。
+Description: RootHide 专用自包含版。使用 jbroot 解析内置 AutoGo 运行环境，由原生后台服务启动、停止并自动重启。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks

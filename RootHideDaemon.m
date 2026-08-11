@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <roothide.h>
 #import <errno.h>
 #import <fcntl.h>
 #import <signal.h>
@@ -45,7 +46,7 @@ static BOOL XLWorkerEnabled(void) {
 
 static BOOL XLStartWorker(void) {
     NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSString *runtime = @"/usr/libexec/XingLanAutoGoRuntime";
+    NSString *runtime = jbroot(@"/usr/libexec/XingLanAutoGoRuntime");
     NSString *workerPath = [runtime stringByAppendingPathComponent:@"app"];
     if (![fileManager isExecutableFileAtPath:workerPath]) {
         XLWriteStatus(@"E2");
