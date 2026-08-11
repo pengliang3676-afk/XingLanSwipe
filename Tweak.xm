@@ -26,6 +26,7 @@ static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 static NSString *xlDiagnosticStatus;
 static NSString *xlUploadFailureCode;
+static NSString *xlLastAutoGoResponse;
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -285,6 +286,7 @@ static BOOL XLReadFrame(int socketFD, uint8_t *command, NSData **payload) {
 
 static BOOL XLReadExpectedOKFrame(int socketFD, uint8_t expectedCommand,
                                   NSString *stage) {
+    xlLastAutoGoResponse = nil;
     uint8_t command = 0;
     NSData *payload = nil;
     if (!XLReadFrame(socketFD, &command, &payload)) {
@@ -294,6 +296,7 @@ static BOOL XLReadExpectedOKFrame(int socketFD, uint8_t expectedCommand,
 
     NSString *payloadText = [[NSString alloc] initWithData:payload
                                                    encoding:NSUTF8StringEncoding];
+    xlLastAutoGoResponse = payloadText ?: payload.description;
     NSLog(@"[XingLanSwipe] AutoGo %@ response command=%u payload=%@",
           stage, command, payloadText ?: payload.description);
     static const uint8_t expected[] = {'O', 'K'};
@@ -377,27 +380,30 @@ static BOOL XLUploadWorkerOnSocket(int socketFD) {
     return success;
 }
 
-static void XLResetAutoGoDebugService(void) {
-    XLRequestAutoGoDebugServiceStop();
-    for (NSUInteger attempt = 0; attempt < 30; attempt++) {
-        int socketFD = XLConnectAutoGoService();
-        if (socketFD < 0) break;
+static void XLStopExistingWorkerBeforeUpload(void) {
+    int socketFD = XLConnectAutoGoService();
+    if (socketFD >= 0) {
+        BOOL sent = XLSendFrame(socketFD, XLAutoGoStopCommand, NULL, 0);
         close(socketFD);
-        usleep(100 * 1000);
+        NSLog(@"[XingLanSwipe] pre-upload STOP %@",
+              sent ? @"sent" : @"failed");
     }
 
-    usleep(500 * 1000);
-    XLRequestAutoGoDebugService();
-    (void)XLWaitForAutoGoService();
+    // AutoGo opens Runtime/debug with write access during PUSH. If the old
+    // binary is still executing, iOS returns ETXTBSY and AutoGo reports
+    // ERR:open failed. Keep the service enabled while the old process exits.
+    usleep(1500 * 1000);
 }
 
 static int XLPrepareWorkerSessionWithRetry(void) {
+    XLStopExistingWorkerBeforeUpload();
     for (NSUInteger attempt = 1;
          attempt <= 3 && xlRequestedRunning;
          attempt++) {
         // The listener can accept TCP slightly before its upload handler is
         // ready on a newly installed device. Give it time to finish starting.
         usleep(attempt == 1 ? 2000 * 1000 : 2500 * 1000);
+        xlLastAutoGoResponse = nil;
         int socketFD = XLConnectAutoGoService();
         if (socketFD < 0) {
             xlUploadFailureCode = @"E23";
@@ -422,7 +428,13 @@ static int XLPrepareWorkerSessionWithRetry(void) {
               (unsigned long)attempt,
               xlUploadFailureCode ?: @"unknown");
         if (attempt < 3 && xlRequestedRunning) {
-            XLResetAutoGoDebugService();
+            if ([xlLastAutoGoResponse isEqualToString:@"ERR:open failed"]) {
+                XLStopExistingWorkerBeforeUpload();
+            } else {
+                XLRequestAutoGoDebugService();
+                (void)XLWaitForAutoGoService();
+                usleep(500 * 1000);
+            }
         }
     }
     return -1;
@@ -556,10 +568,15 @@ static void XLStartWorker(void) {
 }
 
 static void XLStopWorker(void) {
-    XLWriteWorkerFlag(NO);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        XLSendStopCommand();
         int socketFD = xlRunSocket;
+        if (socketFD >= 0) {
+            (void)XLSendFrame(socketFD, XLAutoGoStopCommand, NULL, 0);
+        } else {
+            XLSendStopCommand();
+        }
+        usleep(500 * 1000);
+        XLWriteWorkerFlag(NO);
         if (socketFD >= 0) shutdown(socketFD, SHUT_RDWR);
         XLRequestAutoGoDebugServiceStop();
     });
