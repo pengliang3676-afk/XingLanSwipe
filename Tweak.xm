@@ -28,6 +28,7 @@ static dispatch_source_t xlDirectWorkerExitSource;
 #endif
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
+static NSString *xlDiagnosticStatus;
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -64,8 +65,15 @@ static BOOL XLWriteWorkerFlag(BOOL running) {
 
 static void XLUpdateUI(void) {
     if (!xlHomeStatusLabel) return;
-    xlHomeStatusLabel.hidden = !xlRunning;
-    xlHomeStatusLabel.text = @"开";
+    xlHomeStatusLabel.hidden = !xlRunning && xlDiagnosticStatus.length == 0;
+    xlHomeStatusLabel.text = xlDiagnosticStatus.length > 0 ? xlDiagnosticStatus : @"开";
+}
+
+static void XLSetDiagnosticStatus(NSString *status) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        xlDiagnosticStatus = [status copy];
+        XLUpdateUI();
+    });
 }
 
 static BOOL XLWriteAll(int socketFD, const void *bytes, size_t length) {
@@ -325,6 +333,7 @@ static void XLHandleDirectWorkerExit(pid_t pid) {
         xlRunning = NO;
         XLWritePreferenceRunning(NO);
         XLWriteWorkerFlag(NO);
+        xlDiagnosticStatus = @"退";
         XLUpdateUI();
         NSLog(@"[XingLanSwipe] RootHide direct worker exited unexpectedly");
     }
@@ -360,11 +369,13 @@ static BOOL XLStartRootHideDirectWorker(void) {
 
     NSString *bundlePath = XLFindAutoGoBundlePath();
     if (bundlePath.length == 0) {
+        XLSetDiagnosticStatus(@"E1");
         NSLog(@"[XingLanSwipe] RootHide TrollStore AutoGo bundle was not found");
         return NO;
     }
     NSString *executable = XLPrepareRootHideWorker(bundlePath);
     if (executable.length == 0) {
+        XLSetDiagnosticStatus(@"E2");
         NSLog(@"[XingLanSwipe] RootHide direct worker is unavailable");
         return NO;
     }
@@ -374,6 +385,7 @@ static BOOL XLStartRootHideDirectWorker(void) {
     pid_t pid = 0;
     int result = posix_spawn(&pid, path, NULL, NULL, arguments, environ);
     if (result != 0 || pid <= 0) {
+        XLSetDiagnosticStatus(@"E3");
         NSLog(@"[XingLanSwipe] RootHide direct worker spawn failed result=%d", result);
         return NO;
     }
@@ -398,6 +410,7 @@ static BOOL XLStartRootHideDirectWorker(void) {
         }
         xlStartInProgress = NO;
         xlRunning = YES;
+        xlDiagnosticStatus = nil;
         XLWritePreferenceRunning(YES);
         XLUpdateUI();
         NSLog(@"[XingLanSwipe] RootHide direct worker started pid=%d", pid);
@@ -532,7 +545,10 @@ static void __attribute__((unused)) XLSendStopCommand(void) {
 
 static void XLStartWorker(void) {
     if (xlRunning || xlStartInProgress) return;
+    xlDiagnosticStatus = @"启";
+    XLUpdateUI();
     if (!XLWriteWorkerFlag(YES)) {
+        xlDiagnosticStatus = @"E0";
         xlRequestedRunning = NO;
         XLWritePreferenceRunning(NO);
         XLUpdateUI();
@@ -617,6 +633,7 @@ static void XLSetRunning(BOOL requestedRunning) {
     }
 
     xlRunning = NO;
+    xlDiagnosticStatus = nil;
     XLWritePreferenceRunning(NO);
     XLStopWorker();
     XLUpdateUI();
