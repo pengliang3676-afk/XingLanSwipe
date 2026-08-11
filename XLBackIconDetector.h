@@ -5,7 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface XLBackIconDetector : NSObject
 
 - (nullable UIImage *)captureScreenWithError:(NSError **)error;
-- (BOOL)containsMyTextInScreenshot:(UIImage *)screenshot error:(NSError **)error;
+- (double)matchScoreForScreenshot:(UIImage *)screenshot error:(NSError **)error;
 
 @end
 

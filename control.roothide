@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.4.0-test1
+Version: 2.4.0-test2
 Architecture: iphoneos-arm64e
-Description: RootHide 原生 Vision OCR 单机验证版。控制中心开启后仅识别一次右下角“我的”，不执行任何滑动，不依赖 AutoGo。
+Description: RootHide 本地图案匹配单机验证版。控制中心开启后仅检测一次右下角“我的”并显示匹配分数，不执行任何滑动，不依赖 AutoGo 或 Vision。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
