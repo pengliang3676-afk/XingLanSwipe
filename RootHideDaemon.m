@@ -16,6 +16,8 @@ extern char **environ;
 
 static NSString *const XLStatusPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status";
+static NSString *const XLFlagPath =
+    @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker";
 static NSString *const XLServiceLogPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.autogo-service.log";
 static NSString *const XLAutoGoBundleIdentifier = @"com.auto.go";
@@ -41,6 +43,15 @@ static void XLWriteStatus(NSString *status) {
                encoding:NSUTF8StringEncoding
                   error:nil];
     chmod(XLStatusPath.fileSystemRepresentation, 0644);
+}
+
+static BOOL XLWorkerEnabled(void) {
+    NSString *value = [NSString stringWithContentsOfFile:XLFlagPath
+                                                 encoding:NSUTF8StringEncoding
+                                                    error:nil];
+    value = [value stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [value isEqualToString:@"1"];
 }
 
 static BOOL XLPortOpen(void) {
@@ -172,7 +183,9 @@ static BOOL XLEnsureAutoGoService(void) {
     BOOL floatballOK = XLSpawnService(bundlePath, @"floatball", &XLFloatballPID);
     if (!overlayOK || !floatballOK) return NO;
 
-    for (NSUInteger attempt = 0; attempt < 30 && !XLShouldStop; attempt++) {
+    for (NSUInteger attempt = 0;
+         attempt < 30 && !XLShouldStop && XLWorkerEnabled();
+         attempt++) {
         if (attempt % 4 == 0) XLRequestDebugService();
         if (XLPortOpen()) {
             XLWriteStatus(@"SERVICE_RUNNING");
@@ -207,13 +220,35 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         signal(SIGTERM, XLSignalHandler);
         signal(SIGINT, XLSignalHandler);
-        XLWriteStatus(@"STARTING_SERVICE");
+        XLWriteStatus(@"IDLE");
+        NSUInteger consecutiveFailures = 0;
 
         while (!XLShouldStop) {
+            if (!XLWorkerEnabled()) {
+                XLStopService(&XLFloatballPID);
+                XLStopService(&XLOverlayPID);
+                consecutiveFailures = 0;
+                XLWriteStatus(@"IDLE");
+                usleep(1000 * 1000);
+                continue;
+            }
+
             XLReapPID(&XLOverlayPID);
             XLReapPID(&XLFloatballPID);
-            (void)XLEnsureAutoGoService();
-            for (NSUInteger tick = 0; tick < 20 && !XLShouldStop; tick++) {
+
+            BOOL serviceReady = XLEnsureAutoGoService();
+            if (serviceReady) {
+                consecutiveFailures = 0;
+            } else {
+                consecutiveFailures++;
+            }
+
+            NSUInteger waitSeconds = serviceReady ? 60 :
+                (consecutiveFailures <= 3 ? 5 : 30);
+            NSUInteger ticks = waitSeconds * 2;
+            for (NSUInteger tick = 0;
+                 tick < ticks && !XLShouldStop && XLWorkerEnabled();
+                 tick++) {
                 usleep(500 * 1000);
             }
         }
