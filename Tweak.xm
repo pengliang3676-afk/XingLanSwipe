@@ -365,6 +365,25 @@ static BOOL __attribute__((unused)) XLUploadWorker(void) {
     return success;
 }
 
+static BOOL XLUploadWorkerWithRetry(void) {
+    for (NSUInteger attempt = 1;
+         attempt <= 3 && xlRequestedRunning;
+         attempt++) {
+        // The listener can accept TCP slightly before its upload handler is
+        // ready on a newly installed device. Give it time to finish starting.
+        usleep(attempt == 1 ? 2000 * 1000 : 2500 * 1000);
+        if (XLUploadWorker()) return YES;
+
+        NSLog(@"[XingLanSwipe] AutoGo worker upload attempt %lu failed",
+              (unsigned long)attempt);
+        if (attempt < 3 && xlRequestedRunning) {
+            XLRequestAutoGoDebugService();
+            (void)XLWaitForAutoGoService();
+        }
+    }
+    return NO;
+}
+
 static BOOL __attribute__((unused)) XLRunWorkerSession(void) {
     int socketFD = XLConnectAutoGoService();
     if (socketFD < 0) return NO;
@@ -461,7 +480,7 @@ static void XLStartWorker(void) {
             });
             return;
         }
-        if (!XLUploadWorker()) {
+        if (!XLUploadWorkerWithRetry()) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlStartInProgress = NO;
                 xlRequestedRunning = NO;
