@@ -10,7 +10,6 @@ static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
-static const uint32_t XLInitialForegroundVerificationDelay = 10;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 
@@ -281,7 +280,7 @@ static void XLSetRunning(BOOL running) {
     xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
-        XLScheduleBackSwipeAfterDelay(XLInitialForegroundVerificationDelay, YES);
+        XLScheduleNextBackSwipe();
         NSLog(@"[XingLanSwipe] started from Control Center");
     } else {
         XLCancelTimer();
