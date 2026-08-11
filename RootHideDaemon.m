@@ -60,6 +60,7 @@ static BOOL XLStartWorker(void) {
 
     const char *path = workerPath.fileSystemRepresentation;
     char *const arguments[] = {(char *)path, NULL};
+    [fileManager removeItemAtPath:XLLogPath error:nil];
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO,
@@ -76,8 +77,31 @@ static BOOL XLStartWorker(void) {
     }
 
     XLWorkerPID = pid;
-    XLWriteStatus(@"RUNNING");
-    return YES;
+    for (NSUInteger attempt = 0; attempt < 32; attempt++) {
+        int childStatus = 0;
+        pid_t waitResult = waitpid(pid, &childStatus, WNOHANG);
+        if (waitResult == pid || (waitResult < 0 && errno == ECHILD)) {
+            XLWorkerPID = 0;
+            XLWriteStatus([NSString stringWithFormat:@"EXIT%d", childStatus]);
+            return NO;
+        }
+
+        NSString *logText = [NSString stringWithContentsOfFile:XLLogPath
+                                                       encoding:NSUTF8StringEncoding
+                                                          error:nil];
+        if ([logText containsString:@"FORMAL_LOOP_STARTED=true"]) {
+            XLWriteStatus(@"RUNNING");
+            return YES;
+        }
+        if ([logText containsString:@"FATAL=OCR_INIT_FAILED"]) {
+            XLWriteStatus(@"EO");
+            return NO;
+        }
+        usleep(250 * 1000);
+    }
+
+    XLWriteStatus(@"EL");
+    return NO;
 }
 
 static void XLStopWorker(void) {

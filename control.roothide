@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.3.10
+Version: 2.3.11
 Architecture: iphoneos-arm64e
-Description: RootHide 短间隔测试版。上滑 10–15 秒，返回检查 20‑30 秒，其他逻辑与正式版一致。
+Description: RootHide 短间隔修复版。取消不可用的前台包名拦截，只在手动开启时运行；上滑 10–15 秒，返回检查 20‑30 秒。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
