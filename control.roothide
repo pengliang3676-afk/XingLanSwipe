@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.3.4
+Version: 2.3.5
 Architecture: iphoneos-arm64e
-Description: RootHide 专用诊断版。控制中心直接启动 TrollStore AutoGo 正式脚本，并显示启动状态码。
+Description: RootHide 专用修复版。为 AutoGo 工作程序补齐 RootHide 执行权限，并显示具体启动错误码。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks

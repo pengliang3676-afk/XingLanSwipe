@@ -385,7 +385,7 @@ static BOOL XLStartRootHideDirectWorker(void) {
     pid_t pid = 0;
     int result = posix_spawn(&pid, path, NULL, NULL, arguments, environ);
     if (result != 0 || pid <= 0) {
-        XLSetDiagnosticStatus(@"E3");
+        XLSetDiagnosticStatus([NSString stringWithFormat:@"E%d", result]);
         NSLog(@"[XingLanSwipe] RootHide direct worker spawn failed result=%d", result);
         return NO;
     }
