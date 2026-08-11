@@ -1,9 +1,9 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.1.0-test1
+Version: 2.1.1-autogo-test1
 Architecture: iphoneos-arm64
-Description: 星澜原生计时、上滑、Vision 文字识别与条件返回快速验证版。
+Description: 手动开关 AutoGo OCR、10 秒上滑与 20 秒条件返回快速验证版。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
-Depends: mobilesubstrate, com.opa334.ccsupport
+Depends: mobilesubstrate, com.opa334.ccsupport, com.auto.go (>= 1.1.4-test1)
