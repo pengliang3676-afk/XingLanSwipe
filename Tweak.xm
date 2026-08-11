@@ -5,10 +5,12 @@
 #import "XLBackIconDetector.h"
 #import "XingLanSwipeShared.h"
 
+static NSString *const XLTargetApplicationBundleIdentifier = @"com.baidu.BaiduMobileInfo";
 static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 300;
 static const uint32_t XLBackMaximumDelay = 600;
+static const uint32_t XLInitialForegroundVerificationDelay = 10;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 
@@ -26,6 +28,16 @@ static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 
 @interface XLStatusOverlayWindow : UIWindow
+@end
+
+@interface UIApplication (XLFrontmostApplication)
+- (id)_accessibilityFrontMostApplication;
+@end
+
+@interface NSObject (XLApplicationIdentity)
++ (id)sharedInstance;
+- (id)frontmostApplication;
+- (NSString *)bundleIdentifier;
 @end
 
 @implementation XLStatusOverlayWindow
@@ -83,9 +95,38 @@ static BOOL XLGestureCooldownIsActive(void) {
     return CFAbsoluteTimeGetCurrent() - xlLastGestureEndTime < XLGestureCooldown;
 }
 
+static BOOL XLTargetApplicationIsForeground(void) {
+    UIApplication *application = UIApplication.sharedApplication;
+    SEL selector = @selector(_accessibilityFrontMostApplication);
+    id frontmostApplication = nil;
+    if ([application respondsToSelector:selector]) {
+        frontmostApplication = [application _accessibilityFrontMostApplication];
+    }
+    if (!frontmostApplication) {
+        Class workspaceClass = NSClassFromString(@"SBMainWorkspace");
+        if ([workspaceClass respondsToSelector:@selector(sharedInstance)]) {
+            id workspace = [workspaceClass sharedInstance];
+            if ([workspace respondsToSelector:@selector(frontmostApplication)]) {
+                frontmostApplication = [workspace frontmostApplication];
+            }
+        }
+    }
+    if (![frontmostApplication respondsToSelector:@selector(bundleIdentifier)]) {
+        NSLog(@"[XingLanSwipe] no foreground application detected");
+        return NO;
+    }
+    NSString *bundleIdentifier = [frontmostApplication bundleIdentifier];
+    return [bundleIdentifier isEqualToString:XLTargetApplicationBundleIdentifier];
+}
+
 static void XLPerformSwipe(void) {
     XLCancelTimer();
     if (!xlRunning) return;
+    if (!XLTargetApplicationIsForeground()) {
+        NSLog(@"[XingLanSwipe] local swipe skipped because Baidu is not foreground");
+        XLScheduleNext();
+        return;
+    }
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     BOOL backCheckDueSoon = xlNextBackCheckTime > 0.0 &&
         xlNextBackCheckTime - now <= XLGestureCooldown;
@@ -128,6 +169,12 @@ static void XLDispatchBackSwipe(BOOL quickVerification) {
 static void XLPerformBackSwipe(BOOL quickVerification) {
     XLCancelBackTimer();
     if (!xlRunning) return;
+    if (!XLTargetApplicationIsForeground()) {
+        NSLog(@"[XingLanSwipe] back check skipped because Baidu is not foreground");
+        if (quickVerification) XLShowStatusText(@"非百", 4.0);
+        XLScheduleNextBackSwipe();
+        return;
+    }
     if (xlActionBusy || XLGestureCooldownIsActive()) {
         NSLog(@"[XingLanSwipe] back check deferred to avoid action conflict");
         XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay, quickVerification);
@@ -234,7 +281,7 @@ static void XLSetRunning(BOOL running) {
     xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
-        XLScheduleNextBackSwipe();
+        XLScheduleBackSwipeAfterDelay(XLInitialForegroundVerificationDelay, YES);
         NSLog(@"[XingLanSwipe] started from Control Center");
     } else {
         XLCancelTimer();
