@@ -1,6 +1,6 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.3.0
+Version: 2.3.1
 Architecture: iphoneos-arm64
 Description: 控制中心手动启停 AutoGo OCR、随机上滑与条件返回正式版。
 Maintainer: XingLan
