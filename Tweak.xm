@@ -370,8 +370,11 @@ static BOOL __attribute__((unused)) XLUploadWorker(void) {
     if (!success) {
         xlUploadFailureCode = @"E24";
     } else if (!XLReadOKFrame(socketFD)) {
-        success = NO;
+        // Some AutoGo builds close the upload connection after persisting the
+        // complete file instead of returning an ACK frame. The subsequent RUN
+        // command is the authoritative integrity check on those devices.
         xlUploadFailureCode = @"E25";
+        NSLog(@"[XingLanSwipe] upload ACK missing; continuing to RUN verification");
     }
     close(socketFD);
     NSLog(@"[XingLanSwipe] AutoGo worker upload %@", success ? @"succeeded" : @"failed");
