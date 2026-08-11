@@ -16,6 +16,8 @@ on:
       - "Makefile"
       - "control"
       - "control.roothide"
+      - "RootHideDaemon.entitlements"
+      - "RootHideDaemon.m"
       - "layout/**"
       - "layout.roothide/**"
       - ".github/workflows/build.yml"
@@ -55,7 +57,7 @@ jobs:
         run: |
           cp control.roothide control
           rm -rf layout/DEBIAN layout/Library/LaunchDaemons
-          cp -R layout.roothide/DEBIAN layout/
+          cp -R layout.roothide/. layout/
           chmod 0755 layout/DEBIAN/postinst layout/DEBIAN/prerm
 
       - name: Build package
