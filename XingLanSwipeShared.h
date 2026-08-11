@@ -5,6 +5,8 @@
 #define XLControlCenterStateNotification "com.jibeib.xinglanswipe.state-changed"
 #define XLWorkerRunFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker"
 
+#define XLAutoGoDebugEnableNotification "com.autogo.floatball.debug.enable_request"
+
 #define XLAutoGoServicePort 8820
 #define XLMaximumAutoGoFrameSize (16 * 1024 * 1024)
 #define XLAutoGoPushCommand 1

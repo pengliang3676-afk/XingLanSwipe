@@ -15,6 +15,7 @@ on:
       - "XingLanSwipe.plist"
       - "Makefile"
       - "control"
+      - "layout/**"
       - ".github/workflows/build.yml"
 
 jobs:

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jibeib.xinglanswipe.autogo-floatball</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/var/jb/Applications/com.auto.go.app/floatball</string>
+        <string>/var/jb/Applications/com.auto.go.app/Runtime</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/var/jb/Applications/com.auto.go.app</string>
+    <key>UserName</key>
+    <string>root</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+</dict>
+</plist>

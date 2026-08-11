@@ -1,0 +1,23 @@
+#!/bin/sh
+
+PREFIX=/var/jb
+LAUNCH_DAEMONS="$PREFIX/Library/LaunchDaemons"
+
+load_service() {
+    label="$1"
+    plist="$2"
+
+    launchctl bootout "system/$label" >/dev/null 2>&1 || true
+    if ! launchctl bootstrap system "$plist" >/dev/null 2>&1; then
+        launchctl load -w "$plist" >/dev/null 2>&1 || true
+    fi
+}
+
+load_service \
+    com.jibeib.xinglanswipe.autogo-overlay \
+    "$LAUNCH_DAEMONS/com.jibeib.xinglanswipe.autogo-overlay.plist"
+load_service \
+    com.jibeib.xinglanswipe.autogo-floatball \
+    "$LAUNCH_DAEMONS/com.jibeib.xinglanswipe.autogo-floatball.plist"
+
+exit 0

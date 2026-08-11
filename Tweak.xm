@@ -104,6 +104,30 @@ static int XLConnectAutoGoService(void) {
     return socketFD;
 }
 
+static void XLRequestAutoGoDebugService(void) {
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR(XLAutoGoDebugEnableNotification),
+        NULL, NULL, YES);
+}
+
+static BOOL XLWaitForAutoGoService(void) {
+    for (NSUInteger attempt = 0; attempt < 50; attempt++) {
+        int socketFD = XLConnectAutoGoService();
+        if (socketFD >= 0) {
+            close(socketFD);
+            return YES;
+        }
+
+        if (attempt % 5 == 0) XLRequestAutoGoDebugService();
+        usleep(200 * 1000);
+    }
+
+    NSLog(@"[XingLanSwipe] AutoGo background service did not open port %d",
+          XLAutoGoServicePort);
+    return NO;
+}
+
 static BOOL XLSendFrame(int socketFD, uint8_t command,
                         const void *payload, uint32_t payloadLength) {
     uint8_t header[5] = {command, 0, 0, 0, 0};
@@ -288,6 +312,17 @@ static void XLStartWorker(void) {
 
     xlStartInProgress = YES;
     dispatch_async(xlWorkerQueue, ^{
+        if (!XLWaitForAutoGoService()) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                xlStartInProgress = NO;
+                xlRequestedRunning = NO;
+                xlRunning = NO;
+                XLWritePreferenceRunning(NO);
+                XLWriteWorkerFlag(NO);
+                XLUpdateUI();
+            });
+            return;
+        }
         if (!XLUploadWorker()) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlStartInProgress = NO;
