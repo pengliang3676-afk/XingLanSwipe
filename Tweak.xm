@@ -381,6 +381,7 @@ static BOOL __attribute__((unused)) XLRunWorkerSession(void) {
         xlRunSocket = socketFD;
         xlRunning = YES;
         xlStartInProgress = NO;
+        xlDiagnosticStatus = nil;
         XLWritePreferenceRunning(YES);
         XLUpdateUI();
         NSLog(@"[XingLanSwipe] AutoGo worker started through debug service");
