@@ -25,6 +25,7 @@ static dispatch_queue_t xlWorkerQueue;
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 static NSString *xlDiagnosticStatus;
+static NSString *xlUploadFailureCode;
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -311,19 +312,25 @@ static NSString *XLWorkerResourcePath(void) {
 }
 
 static BOOL __attribute__((unused)) XLUploadWorker(void) {
+    xlUploadFailureCode = nil;
     NSString *workerPath = XLWorkerResourcePath();
     if (!workerPath) {
         NSLog(@"[XingLanSwipe] bundled AutoGo worker is missing");
+        xlUploadFailureCode = @"E21";
         return NO;
     }
 
     int workerFD = open(workerPath.fileSystemRepresentation, O_RDONLY);
-    if (workerFD < 0) return NO;
+    if (workerFD < 0) {
+        xlUploadFailureCode = @"E22";
+        return NO;
+    }
 
     struct stat workerStat;
     if (fstat(workerFD, &workerStat) != 0 || workerStat.st_size <= 0 ||
         (uint64_t)workerStat.st_size > UINT32_MAX - 7) {
         close(workerFD);
+        xlUploadFailureCode = @"E22";
         return NO;
     }
 
@@ -332,6 +339,7 @@ static BOOL __attribute__((unused)) XLUploadWorker(void) {
         close(workerFD);
         NSLog(@"[XingLanSwipe] AutoGo service 127.0.0.1:%d is unavailable",
               XLAutoGoServicePort);
+        xlUploadFailureCode = @"E23";
         return NO;
     }
 
@@ -359,10 +367,29 @@ static BOOL __attribute__((unused)) XLUploadWorker(void) {
     }
     close(workerFD);
 
-    if (success) success = XLReadOKFrame(socketFD);
+    if (!success) {
+        xlUploadFailureCode = @"E24";
+    } else if (!XLReadOKFrame(socketFD)) {
+        success = NO;
+        xlUploadFailureCode = @"E25";
+    }
     close(socketFD);
     NSLog(@"[XingLanSwipe] AutoGo worker upload %@", success ? @"succeeded" : @"failed");
     return success;
+}
+
+static void XLResetAutoGoDebugService(void) {
+    XLRequestAutoGoDebugServiceStop();
+    for (NSUInteger attempt = 0; attempt < 30; attempt++) {
+        int socketFD = XLConnectAutoGoService();
+        if (socketFD < 0) break;
+        close(socketFD);
+        usleep(100 * 1000);
+    }
+
+    usleep(500 * 1000);
+    XLRequestAutoGoDebugService();
+    (void)XLWaitForAutoGoService();
 }
 
 static BOOL XLUploadWorkerWithRetry(void) {
@@ -377,8 +404,7 @@ static BOOL XLUploadWorkerWithRetry(void) {
         NSLog(@"[XingLanSwipe] AutoGo worker upload attempt %lu failed",
               (unsigned long)attempt);
         if (attempt < 3 && xlRequestedRunning) {
-            XLRequestAutoGoDebugService();
-            (void)XLWaitForAutoGoService();
+            XLResetAutoGoDebugService();
         }
     }
     return NO;
@@ -485,7 +511,7 @@ static void XLStartWorker(void) {
                 xlStartInProgress = NO;
                 xlRequestedRunning = NO;
                 xlRunning = NO;
-                xlDiagnosticStatus = @"E2";
+                xlDiagnosticStatus = xlUploadFailureCode ?: @"E2";
                 XLWritePreferenceRunning(NO);
                 XLWriteWorkerFlag(NO);
                 XLUpdateUI();
