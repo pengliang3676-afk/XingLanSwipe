@@ -6,9 +6,6 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = XingLanSwipe
 XingLanSwipe_FILES = Tweak.xm
 XingLanSwipe_CFLAGS = -fobjc-arc -Wall -Wextra
-ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
-XingLanSwipe_CFLAGS += -DXL_ROOT_HIDE=1
-endif
 XingLanSwipe_FRAMEWORKS = UIKit Foundation
 
 BUNDLE_NAME = XingLanSwipeModule
@@ -21,13 +18,3 @@ XingLanSwipeModule_LDFLAGS = -undefined dynamic_lookup
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/bundle.mk
-
-ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
-TOOL_NAME = XingLanSwipeRootHideDaemon
-XingLanSwipeRootHideDaemon_FILES = RootHideDaemon.m
-XingLanSwipeRootHideDaemon_INSTALL_PATH = /usr/libexec
-XingLanSwipeRootHideDaemon_CFLAGS = -fobjc-arc -Wall -Wextra
-XingLanSwipeRootHideDaemon_FRAMEWORKS = Foundation
-XingLanSwipeRootHideDaemon_CODESIGN_FLAGS = -SRootHideDaemon.entitlements
-include $(THEOS_MAKE_PATH)/tool.mk
-endif

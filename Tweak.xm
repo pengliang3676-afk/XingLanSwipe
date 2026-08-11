@@ -65,13 +65,6 @@ static void XLUpdateUI(void) {
     xlHomeStatusLabel.text = xlDiagnosticStatus.length > 0 ? xlDiagnosticStatus : @"开";
 }
 
-static void XLSetDiagnosticStatus(NSString *status) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        xlDiagnosticStatus = [status copy];
-        XLUpdateUI();
-    });
-}
-
 static BOOL XLWriteAll(int socketFD, const void *bytes, size_t length) {
     const uint8_t *cursor = (const uint8_t *)bytes;
     while (length > 0) {
@@ -305,35 +298,6 @@ static NSString *XLWorkerResourcePath(void) {
     return nil;
 }
 
-#if XL_ROOT_HIDE
-static BOOL XLStartRootHideDirectWorker(void) {
-    static NSString *const statusPath =
-        @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status";
-    NSString *lastError = nil;
-    NSCharacterSet *whitespace = NSCharacterSet.whitespaceAndNewlineCharacterSet;
-
-    // The RootHide launch daemon watches the worker flag. Wait until it has
-    // staged and started the signed AutoGo worker, instead of spawning from
-    // SpringBoard (which RootHide rejects on affected devices).
-    for (NSUInteger attempt = 0; attempt < 20; attempt++) {
-        NSString *status = [NSString stringWithContentsOfFile:statusPath
-                                                     encoding:NSUTF8StringEncoding
-                                                        error:nil];
-        status = [status stringByTrimmingCharactersInSet:whitespace];
-        if ([status isEqualToString:@"RUNNING"]) return YES;
-        if ([status hasPrefix:@"E"] || [status hasPrefix:@"EXIT"]) {
-            lastError = status;
-        }
-        usleep(500 * 1000);
-    }
-
-    XLSetDiagnosticStatus(lastError.length > 0 ? lastError : @"ES");
-    NSLog(@"[XingLanSwipe] RootHide daemon did not start worker, status=%@",
-          lastError ?: @"missing");
-    return NO;
-}
-#endif
-
 static BOOL __attribute__((unused)) XLUploadWorker(void) {
     NSString *workerPath = XLWorkerResourcePath();
     if (!workerPath) {
@@ -472,28 +436,6 @@ static void XLStartWorker(void) {
 
     xlStartInProgress = YES;
     dispatch_async(xlWorkerQueue, ^{
-#if XL_ROOT_HIDE
-        if (XLStartRootHideDirectWorker()) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!xlRequestedRunning) return;
-                xlStartInProgress = NO;
-                xlRunning = YES;
-                xlDiagnosticStatus = nil;
-                XLWritePreferenceRunning(YES);
-                XLUpdateUI();
-            });
-        } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                xlStartInProgress = NO;
-                xlRequestedRunning = NO;
-                xlRunning = NO;
-                XLWritePreferenceRunning(NO);
-                XLWriteWorkerFlag(NO);
-                XLUpdateUI();
-            });
-        }
-        return;
-#else
         if (!XLWaitForAutoGoService()) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlStartInProgress = NO;
@@ -528,21 +470,16 @@ static void XLStartWorker(void) {
                 XLUpdateUI();
             });
         }
-#endif
     });
 }
 
 static void XLStopWorker(void) {
     XLWriteWorkerFlag(NO);
-#if XL_ROOT_HIDE
-    // The RootHide launch daemon observes the flag and terminates its child.
-#else
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         XLSendStopCommand();
         int socketFD = xlRunSocket;
         if (socketFD >= 0) shutdown(socketFD, SHUT_RDWR);
     });
-#endif
 }
 
 static void XLSetRunning(BOOL requestedRunning) {

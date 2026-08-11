@@ -16,9 +16,6 @@ on:
       - "Makefile"
       - "control"
       - "control.roothide"
-      - "RootHideDaemon.entitlements"
-      - "RootHideDaemon.m"
-      - "RootHideRuntime/**"
       - "layout/**"
       - "layout.roothide/**"
       - ".github/workflows/build.yml"
@@ -58,24 +55,8 @@ jobs:
         run: |
           cp control.roothide control
           rm -rf layout/DEBIAN layout/Library/LaunchDaemons
-          rm -f ControlCenterModule/Resources/AutoGoWorker
-          cp -R layout.roothide/. layout/
-          mkdir -p layout/usr/libexec/XingLanAutoGoRuntime
-          cp -R RootHideRuntime/. layout/usr/libexec/XingLanAutoGoRuntime/
+          cp -R layout.roothide/DEBIAN layout/
           chmod 0755 layout/DEBIAN/postinst layout/DEBIAN/prerm
-          chmod 0755 layout/usr/libexec/XingLanAutoGoRuntime/app
-          chmod 0755 layout/usr/libexec/XingLanAutoGoRuntime/*.dylib
-
-      - name: Sign RootHide AutoGo runtime
-        run: |
-          RUNTIME="layout/usr/libexec/XingLanAutoGoRuntime"
-          for file in "$RUNTIME"/*.dylib; do
-            ldid -M -S "$file"
-          done
-          ldid -M -SRootHideDaemon.entitlements "$RUNTIME/app"
-          ldid -e "$RUNTIME/app" > /tmp/xinglan-runtime-entitlements.plist
-          grep -q "platform-application" /tmp/xinglan-runtime-entitlements.plist
-          grep -q "com.apple.private.security.no-sandbox" /tmp/xinglan-runtime-entitlements.plist
 
       - name: Build package
         run: gmake clean package FINALPACKAGE=1
