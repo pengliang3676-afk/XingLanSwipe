@@ -6,6 +6,9 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = XingLanSwipe
 XingLanSwipe_FILES = Tweak.xm
 XingLanSwipe_CFLAGS = -fobjc-arc -Wall -Wextra
+ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
+XingLanSwipe_CFLAGS += -DXL_ROOT_HIDE=1
+endif
 XingLanSwipe_FRAMEWORKS = UIKit Foundation
 
 BUNDLE_NAME = XingLanSwipeModule
