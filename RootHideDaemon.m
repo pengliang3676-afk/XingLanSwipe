@@ -23,6 +23,10 @@ static NSString *const XLServiceLogPath =
 static NSString *const XLAutoGoBundleIdentifier = @"com.auto.go";
 static CFStringRef const XLAutoGoDebugEnableNotification =
     CFSTR("com.autogo.floatball.debug.enable_request");
+static CFStringRef const XLAutoGoDebugDisableNotification =
+    CFSTR("com.autogo.floatball.debug.disable_request");
+static CFStringRef const XLAutoGoRemoteDebugDisableNotification =
+    CFSTR("com.autogo.floatball.remote_debug.disable_request");
 static const uint16_t XLAutoGoPort = 8820;
 
 static volatile sig_atomic_t XLShouldStop = 0;
@@ -167,6 +171,15 @@ static void XLRequestDebugService(void) {
         XLAutoGoDebugEnableNotification, NULL, NULL, YES);
 }
 
+static void XLRequestDebugServiceStop(void) {
+    CFNotificationCenterRef center =
+        CFNotificationCenterGetDarwinNotifyCenter();
+    CFNotificationCenterPostNotification(
+        center, XLAutoGoDebugDisableNotification, NULL, NULL, YES);
+    CFNotificationCenterPostNotification(
+        center, XLAutoGoRemoteDebugDisableNotification, NULL, NULL, YES);
+}
+
 static BOOL XLEnsureAutoGoService(void) {
     if (XLPortOpen()) {
         XLWriteStatus(@"SERVICE_RUNNING");
@@ -225,6 +238,14 @@ int main(int argc, char **argv) {
 
         while (!XLShouldStop) {
             if (!XLWorkerEnabled()) {
+                if (XLPortOpen()) {
+                    XLRequestDebugServiceStop();
+                    for (NSUInteger attempt = 0;
+                         attempt < 20 && !XLShouldStop && XLPortOpen();
+                         attempt++) {
+                        usleep(100 * 1000);
+                    }
+                }
                 XLStopService(&XLFloatballPID);
                 XLStopService(&XLOverlayPID);
                 consecutiveFailures = 0;
@@ -253,6 +274,7 @@ int main(int argc, char **argv) {
             }
         }
 
+        XLRequestDebugServiceStop();
         XLStopService(&XLFloatballPID);
         XLStopService(&XLOverlayPID);
         XLWriteStatus(@"STOPPED");

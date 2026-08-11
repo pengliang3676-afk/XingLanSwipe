@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.3.16
+Version: 2.3.17
 Architecture: iphoneos-arm64e
-Description: RootHide 正式版。控制中心开启时才自动运行 AutoGo 服务；上滑 180–300 秒，返回检查 300–600 秒，点击后立即显示“开”。
+Description: RootHide 正式版。控制中心开启时才运行 AutoGo 服务，关闭时发送官方停止指令；上滑 180–300 秒，返回检查 300–600 秒，点击后立即显示“开”。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks

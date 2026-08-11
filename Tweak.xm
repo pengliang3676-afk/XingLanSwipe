@@ -110,6 +110,7 @@ static int XLConnectAutoGoService(void) {
 }
 
 static void XLRequestAutoGoDebugService(void);
+static void XLRequestAutoGoDebugServiceStop(void);
 
 static id XLCallObject(id target, SEL selector) {
     if (!target || !selector || ![target respondsToSelector:selector]) return nil;
@@ -221,6 +222,17 @@ static void XLRequestAutoGoDebugService(void) {
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
         CFSTR(XLAutoGoDebugEnableNotification),
+        NULL, NULL, YES);
+}
+
+static void XLRequestAutoGoDebugServiceStop(void) {
+    CFNotificationCenterRef center =
+        CFNotificationCenterGetDarwinNotifyCenter();
+    CFNotificationCenterPostNotification(
+        center, CFSTR(XLAutoGoDebugDisableNotification),
+        NULL, NULL, YES);
+    CFNotificationCenterPostNotification(
+        center, CFSTR(XLAutoGoRemoteDebugDisableNotification),
         NULL, NULL, YES);
 }
 
@@ -483,6 +495,7 @@ static void XLStopWorker(void) {
         XLSendStopCommand();
         int socketFD = xlRunSocket;
         if (socketFD >= 0) shutdown(socketFD, SHUT_RDWR);
+        XLRequestAutoGoDebugServiceStop();
     });
 }
 

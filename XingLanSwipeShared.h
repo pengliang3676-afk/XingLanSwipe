@@ -6,6 +6,8 @@
 #define XLWorkerRunFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker"
 
 #define XLAutoGoDebugEnableNotification "com.autogo.floatball.debug.enable_request"
+#define XLAutoGoDebugDisableNotification "com.autogo.floatball.debug.disable_request"
+#define XLAutoGoRemoteDebugDisableNotification "com.autogo.floatball.remote_debug.disable_request"
 #define XLAutoGoBundleIdentifier "com.auto.go"
 #define XLControlCenterBundleIdentifier "com.jibeib.xinglanswipe.module"
 
