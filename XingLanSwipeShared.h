@@ -3,5 +3,13 @@
 #define XLPreferenceDomain "com.jibeib.xinglanswipe"
 #define XLRunningPreferenceKey "running"
 #define XLControlCenterStateNotification "com.jibeib.xinglanswipe.state-changed"
-#define XLWorkerExecutablePath "/var/jb/Applications/com.auto.go.app/Runtime/app"
 #define XLWorkerRunFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker"
+
+#define XLAutoGoServicePort 8820
+#define XLMaximumAutoGoFrameSize (16 * 1024 * 1024)
+#define XLAutoGoPushCommand 1
+#define XLAutoGoAckCommand 2
+#define XLAutoGoRunCommand 5
+#define XLAutoGoStopCommand 6
+#define XLAutoGoLogCommand 7
+#define XLAutoGoExitCommand 8
