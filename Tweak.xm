@@ -473,7 +473,16 @@ static void XLStartWorker(void) {
     xlStartInProgress = YES;
     dispatch_async(xlWorkerQueue, ^{
 #if XL_ROOT_HIDE
-        if (!XLStartRootHideDirectWorker()) {
+        if (XLStartRootHideDirectWorker()) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!xlRequestedRunning) return;
+                xlStartInProgress = NO;
+                xlRunning = YES;
+                xlDiagnosticStatus = nil;
+                XLWritePreferenceRunning(YES);
+                XLUpdateUI();
+            });
+        } else {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlStartInProgress = NO;
                 xlRequestedRunning = NO;
