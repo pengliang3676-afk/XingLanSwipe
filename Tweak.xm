@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <math.h>
 #import <notify.h>
 #import "XLBackIconDetector.h"
 #import "XingLanSwipeShared.h"
@@ -53,20 +54,23 @@ static void XLPerformOneShotRecognition(NSUInteger generation) {
     dispatch_async(xlRecognitionQueue, ^{
         @autoreleasepool {
             NSError *recognitionError = nil;
-            BOOL found = [xlDetector containsMyTextInScreenshot:screenshot
-                                                           error:&recognitionError];
+            double score = [xlDetector matchScoreForScreenshot:screenshot
+                                                          error:&recognitionError];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!xlRunning || generation != xlRunGeneration) return;
                 if (recognitionError) {
-                    NSLog(@"[XingLanSwipe] native Vision OCR failed: %@",
+                    NSLog(@"[XingLanSwipe] local template match failed: %@",
                           recognitionError.localizedDescription ?: @"unknown error");
-                    XLSetStatus(@"识错");
+                    XLSetStatus(@"模错");
                     return;
                 }
 
-                NSLog(@"[XingLanSwipe] native Vision OCR result=%@",
-                      found ? @"MY_FOUND" : @"MY_NOT_FOUND");
-                XLSetStatus(found ? @"有我" : @"无我");
+                BOOL found = score >= 0.70;
+                NSInteger percent = MAX(0, MIN(99, (NSInteger)lround(score * 100.0)));
+                NSLog(@"[XingLanSwipe] local MY template score=%.4f result=%@",
+                      score, found ? @"MY_FOUND" : @"MY_NOT_FOUND");
+                XLSetStatus([NSString stringWithFormat:found ? @"有%ld" : @"无%ld",
+                             (long)percent]);
             });
         }
     });
@@ -191,7 +195,7 @@ static void XingLanSwipeInit(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             xlDetector = [XLBackIconDetector new];
             xlRecognitionQueue = dispatch_queue_create(
-                "com.jibeib.xinglanswipe.native-vision", DISPATCH_QUEUE_SERIAL);
+                "com.jibeib.xinglanswipe.local-template", DISPATCH_QUEUE_SERIAL);
             XLInstallStatusOverlay();
             XLSetRunning(NO);
 
@@ -210,7 +214,7 @@ static void XingLanSwipeInit(void) {
                 NULL,
                 CFNotificationSuspensionBehaviorDeliverImmediately);
 
-            NSLog(@"[XingLanSwipe] native one-shot Vision OCR test loaded");
+            NSLog(@"[XingLanSwipe] native one-shot local template test loaded");
         });
     }
 }

@@ -1,10 +1,12 @@
 #import "XLBackIconDetector.h"
-#import <Vision/Vision.h>
 #import <dlfcn.h>
+#import <math.h>
+#import <stdlib.h>
 
 typedef UIImage *(*XLCreateScreenImageFn)(void);
 
 static NSString *const XLDetectorErrorDomain = @"com.jibeib.xinglanswipe.detector";
+static NSString *const XLModuleBundleIdentifier = @"com.jibeib.xinglanswipe.module";
 
 static void XLSetDetectorError(NSError **error, NSInteger code, NSString *message) {
     if (!error) return;
@@ -29,6 +31,91 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
     return function;
 }
 
+static CGImageRef XLCreateUprightImage(UIImage *sourceImage) {
+    if (!sourceImage.CGImage || sourceImage.size.width <= 0.0 ||
+        sourceImage.size.height <= 0.0) return nil;
+    UIGraphicsBeginImageContextWithOptions(sourceImage.size, YES, sourceImage.scale);
+    [sourceImage drawInRect:(CGRect){.origin = CGPointZero, .size = sourceImage.size}];
+    UIImage *uprightImage = UIGraphicsGetImageFromCurrentImageContext();
+    CGImageRef image = uprightImage.CGImage ? CGImageRetain(uprightImage.CGImage) : nil;
+    UIGraphicsEndImageContext();
+    return image;
+}
+
+static UIImage *XLLoadMyTemplateImage(void) {
+    NSBundle *bundle = [NSBundle bundleWithIdentifier:XLModuleBundleIdentifier];
+    NSString *path = [bundle pathForResource:@"my_tab" ofType:@"png"];
+    if (!path) {
+        for (NSBundle *candidate in NSBundle.allBundles) {
+            if ([candidate.bundleIdentifier isEqualToString:XLModuleBundleIdentifier] ||
+                [candidate.bundlePath.lastPathComponent isEqualToString:
+                    @"XingLanSwipeModule.bundle"]) {
+                path = [candidate pathForResource:@"my_tab" ofType:@"png"];
+                if (path) break;
+            }
+        }
+    }
+    if (!path) {
+        NSArray<NSString *> *fallbackPaths = @[
+            @"/var/jb/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png",
+            @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png"
+        ];
+        for (NSString *candidate in fallbackPaths) {
+            if ([NSFileManager.defaultManager fileExistsAtPath:candidate]) {
+                path = candidate;
+                break;
+            }
+        }
+    }
+    return path ? [UIImage imageWithContentsOfFile:path] : nil;
+}
+
+static uint8_t *XLCreateGrayscalePixels(CGImageRef image, size_t width, size_t height) {
+    if (!image || width == 0 || height == 0) return NULL;
+    uint8_t *pixels = calloc(width * height, sizeof(uint8_t));
+    if (!pixels) return NULL;
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceGray();
+    CGContextRef context = CGBitmapContextCreate(
+        pixels, width, height, 8, width, colorSpace, kCGImageAlphaNone);
+    CGColorSpaceRelease(colorSpace);
+    if (!context) {
+        free(pixels);
+        return NULL;
+    }
+    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+    CGContextTranslateCTM(context, 0.0, (CGFloat)height);
+    CGContextScaleCTM(context, 1.0, -1.0);
+    CGContextDrawImage(context, CGRectMake(0.0, 0.0, width, height), image);
+    CGContextRelease(context);
+    return pixels;
+}
+
+static double XLCorrelationAt(const uint8_t *screen, size_t screenWidth,
+                              const uint8_t *reference, size_t refWidth,
+                              size_t refHeight, size_t startX, size_t startY) {
+    double screenSum = 0.0, referenceSum = 0.0;
+    double screenSquares = 0.0, referenceSquares = 0.0, products = 0.0;
+    size_t count = refWidth * refHeight;
+    for (size_t y = 0; y < refHeight; y++) {
+        const uint8_t *screenRow = screen + (startY + y) * screenWidth + startX;
+        const uint8_t *referenceRow = reference + y * refWidth;
+        for (size_t x = 0; x < refWidth; x++) {
+            double a = screenRow[x];
+            double b = referenceRow[x];
+            screenSum += a;
+            referenceSum += b;
+            screenSquares += a * a;
+            referenceSquares += b * b;
+            products += a * b;
+        }
+    }
+    double screenVariance = screenSquares - screenSum * screenSum / count;
+    double referenceVariance = referenceSquares - referenceSum * referenceSum / count;
+    if (screenVariance <= 1.0 || referenceVariance <= 1.0) return 0.0;
+    double covariance = products - screenSum * referenceSum / count;
+    return MAX(0.0, covariance / sqrt(screenVariance * referenceVariance));
+}
+
 @implementation XLBackIconDetector
 
 - (UIImage *)captureScreenWithError:(NSError **)error {
@@ -46,81 +133,94 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
     return image;
 }
 
-- (BOOL)containsMyTextInScreenshot:(UIImage *)screenshot error:(NSError **)error {
-    CGImageRef screen = screenshot.CGImage;
-    if (!screen) {
+- (double)matchScoreForScreenshot:(UIImage *)screenshot error:(NSError **)error {
+    CGImageRef screenImage = XLCreateUprightImage(screenshot);
+    if (!screenImage) {
         XLSetDetectorError(error, 3, @"screen image unavailable");
-        return NO;
+        return -1.0;
     }
 
-    size_t screenWidth = CGImageGetWidth(screen);
-    size_t screenHeight = CGImageGetHeight(screen);
+    UIImage *templateImage = XLLoadMyTemplateImage();
+    if (!templateImage.CGImage) {
+        CGImageRelease(screenImage);
+        XLSetDetectorError(error, 4, @"my template unavailable");
+        return -1.0;
+    }
+
+    size_t screenWidth = CGImageGetWidth(screenImage);
+    size_t screenHeight = CGImageGetHeight(screenImage);
     if (screenWidth == 0 || screenHeight == 0) {
-        XLSetDetectorError(error, 4, @"invalid screen dimensions");
-        return NO;
+        CGImageRelease(screenImage);
+        XLSetDetectorError(error, 5, @"invalid screen dimensions");
+        return -1.0;
     }
 
-    // The confirmed device is 750x1334. Keep the same bottom-right OCR region
-    // proportionally so Retina scale does not change the area being recognized.
-    size_t cropX = MIN(screenWidth - 1,
-        (size_t)((double)screenWidth * 520.0 / 750.0));
-    size_t cropY = MIN(screenHeight - 1,
-        (size_t)((double)screenHeight * 1130.0 / 1334.0));
-    CGRect cropRect = CGRectMake(
-        (CGFloat)cropX,
-        (CGFloat)cropY,
-        (CGFloat)(screenWidth - cropX),
-        (CGFloat)(screenHeight - cropY));
-    CGImageRef crop = CGImageCreateWithImageInRect(screen, cropRect);
-    if (!crop) {
-        XLSetDetectorError(error, 5, @"could not crop OCR region");
-        return NO;
+    double widthScale = (double)screenWidth / 750.0;
+    size_t templateWidth = MAX(8, (size_t)lround(86.0 * widthScale));
+    size_t templateHeight = MAX(5, (size_t)lround(40.0 * widthScale));
+    uint8_t *screenPixels = XLCreateGrayscalePixels(
+        screenImage, screenWidth, screenHeight);
+    uint8_t *templatePixels = XLCreateGrayscalePixels(
+        templateImage.CGImage, templateWidth, templateHeight);
+    CGImageRelease(screenImage);
+    if (!screenPixels || !templatePixels) {
+        free(screenPixels);
+        free(templatePixels);
+        XLSetDetectorError(error, 6, @"could not prepare grayscale images");
+        return -1.0;
     }
 
-    __block BOOL found = NO;
-    __block NSError *recognitionError = nil;
-    VNRecognizeTextRequest *request =
-        [[VNRecognizeTextRequest alloc] initWithCompletionHandler:
-            ^(VNRequest *completedRequest, NSError *requestError) {
-                if (requestError) {
-                    recognitionError = requestError;
-                    return;
-                }
-                for (VNRecognizedTextObservation *observation in completedRequest.results) {
-                    VNRecognizedText *candidate = [observation topCandidates:1].firstObject;
-                    NSString *text = candidate.string ?: @"";
-                    NSString *compact = [[text stringByReplacingOccurrencesOfString:@" " withString:@""]
-                        stringByReplacingOccurrencesOfString:@"\n" withString:@""];
-                    NSLog(@"[XingLanSwipe] Vision OCR text=%@", compact);
-                    if ([compact containsString:@"我的"]) {
-                        found = YES;
-                        break;
-                    }
-                }
-            }];
-    request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-    request.usesLanguageCorrection = YES;
-    request.recognitionLanguages = @[@"zh-Hans", @"zh-Hant"];
-    request.minimumTextHeight = 0.025;
+    size_t searchStartX = MIN(screenWidth - 1,
+        (size_t)lround((double)screenWidth * 0.70));
+    size_t searchStartY = MIN(screenHeight - 1,
+        (size_t)lround((double)screenHeight * 0.90));
+    size_t searchEndX = screenWidth > templateWidth ? screenWidth - templateWidth : 0;
+    size_t searchEndY = screenHeight > templateHeight ? screenHeight - templateHeight : 0;
+    if (searchStartX > searchEndX || searchStartY > searchEndY) {
+        free(screenPixels);
+        free(templatePixels);
+        XLSetDetectorError(error, 7, @"screen is smaller than search area");
+        return -1.0;
+    }
 
-    VNImageRequestHandler *handler =
-        [[VNImageRequestHandler alloc] initWithCGImage:crop options:@{}];
-    BOOL performed = [handler performRequests:@[request] error:&recognitionError];
-    CGImageRelease(crop);
-
-    if (!performed || recognitionError) {
-        if (error) {
-            *error = recognitionError ?: [NSError errorWithDomain:XLDetectorErrorDomain
-                                                              code:6
-                                                          userInfo:@{
-                    NSLocalizedDescriptionKey: @"Vision OCR request failed"
-                }];
+    double bestScore = 0.0;
+    size_t bestX = searchStartX, bestY = searchStartY;
+    for (size_t y = searchStartY; y <= searchEndY; y += 2) {
+        for (size_t x = searchStartX; x <= searchEndX; x += 2) {
+            double score = XLCorrelationAt(screenPixels, screenWidth,
+                                           templatePixels, templateWidth,
+                                           templateHeight, x, y);
+            if (score > bestScore) {
+                bestScore = score;
+                bestX = x;
+                bestY = y;
+            }
         }
-        return NO;
     }
 
-    NSLog(@"[XingLanSwipe] Vision OCR MY_FOUND=%@", found ? @"true" : @"false");
-    return found;
+    size_t refineStartX = MAX(searchStartX, bestX > 3 ? bestX - 3 : 0);
+    size_t refineStartY = MAX(searchStartY, bestY > 3 ? bestY - 3 : 0);
+    size_t refineEndX = MIN(searchEndX, bestX + 3);
+    size_t refineEndY = MIN(searchEndY, bestY + 3);
+    for (size_t y = refineStartY; y <= refineEndY; y++) {
+        for (size_t x = refineStartX; x <= refineEndX; x++) {
+            double score = XLCorrelationAt(screenPixels, screenWidth,
+                                           templatePixels, templateWidth,
+                                           templateHeight, x, y);
+            if (score > bestScore) {
+                bestScore = score;
+                bestX = x;
+                bestY = y;
+            }
+        }
+    }
+
+    free(screenPixels);
+    free(templatePixels);
+    NSLog(@"[XingLanSwipe] local my-template score=%.4f position=%zux%zu screen=%zux%zu template=%zux%zu",
+          bestScore, bestX, bestY, screenWidth, screenHeight,
+          templateWidth, templateHeight);
+    return bestScore;
 }
 
 @end
