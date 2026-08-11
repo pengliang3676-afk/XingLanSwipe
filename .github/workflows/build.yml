@@ -56,6 +56,7 @@ jobs:
       - name: Select RootHide package layout
         run: |
           cp control.roothide control
+          rm -f ControlCenterModule/Resources/AutoGoWorker
           rm -rf layout/DEBIAN layout/Library/LaunchDaemons
           cp -R layout.roothide/. layout/
           rm -rf layout/Library/LaunchDaemons
