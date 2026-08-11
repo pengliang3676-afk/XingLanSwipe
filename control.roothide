@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.3.9
+Version: 2.3.10
 Architecture: iphoneos-arm64e
-Description: RootHide 专用自包含版。修复后台脚本成功启动后桌面状态停留在“启”的问题。
+Description: RootHide 短间隔测试版。上滑 10–15 秒，返回检查 20‑30 秒，其他逻辑与正式版一致。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
