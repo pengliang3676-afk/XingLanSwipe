@@ -1,294 +1,165 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
-#import "XLHIDSender.h"
-#import "XLBackIconDetector.h"
+#import <spawn.h>
+#import <signal.h>
+#import <sys/types.h>
+#import <sys/wait.h>
+#import <errno.h>
+#import <unistd.h>
 #import "XingLanSwipeShared.h"
 
-static NSString *const XLTargetApplicationBundleIdentifier = @"com.baidu.BaiduMobileInfo";
-static const uint32_t XLMinimumDelay = 180;
-static const uint32_t XLMaximumDelay = 300;
-static const uint32_t XLBackMinimumDelay = 300;
-static const uint32_t XLBackMaximumDelay = 600;
-static const uint32_t XLConflictRetryDelay = 5;
-static const CFTimeInterval XLGestureCooldown = 5.0;
+extern char **environ;
 
-static dispatch_source_t xlTimer;
-static dispatch_source_t xlBackTimer;
-static XLHIDSender *xlSender;
-static XLBackIconDetector *xlBackIconDetector;
-static dispatch_queue_t xlImageMatchQueue;
 static BOOL xlRunning = NO;
-static BOOL xlActionBusy = NO;
-static NSUInteger xlRunGeneration = 0;
-static CFAbsoluteTime xlLastGestureEndTime = 0.0;
-static CFAbsoluteTime xlNextBackCheckTime = 0.0;
+static pid_t xlWorkerPID = 0;
+static dispatch_source_t xlWorkerExitSource;
 static UIWindow *xlStatusWindow;
 static UILabel *xlHomeStatusLabel;
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
 
-@interface UIApplication (XLFrontmostApplication)
-- (id)_accessibilityFrontMostApplication;
-@end
-
-@interface NSObject (XLApplicationIdentity)
-+ (id)sharedInstance;
-- (id)frontmostApplication;
-- (NSString *)bundleIdentifier;
-@end
-
 @implementation XLStatusOverlayWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    (void)point; (void)event;
+    (void)point;
+    (void)event;
     return nil;
 }
 @end
 
-static void XLUpdateUI(void) {
-    UILabel *status = xlHomeStatusLabel;
-    if (status) {
-        status.hidden = !xlRunning;
-        status.text = @"开";
-    }
-}
-
-static void XLShowStatusText(NSString *text, NSTimeInterval duration) {
-    UILabel *status = xlHomeStatusLabel;
-    if (!status || !xlRunning) return;
-
-    status.hidden = NO;
-    status.text = text;
-    NSUInteger generation = xlRunGeneration;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(duration * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (xlRunning && generation == xlRunGeneration) XLUpdateUI();
-    });
-}
-
-static void XLCancelTimer(void) {
-    if (xlTimer) {
-        dispatch_source_cancel(xlTimer);
-        xlTimer = nil;
-    }
-}
-
-static void XLCancelBackTimer(void) {
-    if (xlBackTimer) {
-        dispatch_source_cancel(xlBackTimer);
-        xlBackTimer = nil;
-    }
-    xlNextBackCheckTime = 0.0;
-}
-
-static void XLScheduleNext(void);
-static void XLScheduleSwipeAfterDelay(uint32_t delay);
-static void XLScheduleNextBackSwipe(void);
-static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification);
-static void XLPerformBackSwipe(BOOL quickVerification);
-
-static BOOL XLGestureCooldownIsActive(void) {
-    if (xlLastGestureEndTime <= 0.0) return NO;
-    return CFAbsoluteTimeGetCurrent() - xlLastGestureEndTime < XLGestureCooldown;
-}
-
-static BOOL XLTargetApplicationIsForeground(void) {
-    UIApplication *application = UIApplication.sharedApplication;
-    SEL selector = @selector(_accessibilityFrontMostApplication);
-    id frontmostApplication = nil;
-    if ([application respondsToSelector:selector]) {
-        frontmostApplication = [application _accessibilityFrontMostApplication];
-    }
-    if (!frontmostApplication) {
-        Class workspaceClass = NSClassFromString(@"SBMainWorkspace");
-        if ([workspaceClass respondsToSelector:@selector(sharedInstance)]) {
-            id workspace = [workspaceClass sharedInstance];
-            if ([workspace respondsToSelector:@selector(frontmostApplication)]) {
-                frontmostApplication = [workspace frontmostApplication];
-            }
-        }
-    }
-    if (![frontmostApplication respondsToSelector:@selector(bundleIdentifier)]) {
-        NSLog(@"[XingLanSwipe] no foreground application detected");
-        return NO;
-    }
-    NSString *bundleIdentifier = [frontmostApplication bundleIdentifier];
-    return [bundleIdentifier isEqualToString:XLTargetApplicationBundleIdentifier];
-}
-
-static void XLPerformSwipe(void) {
-    XLCancelTimer();
-    if (!xlRunning) return;
-    if (!XLTargetApplicationIsForeground()) {
-        NSLog(@"[XingLanSwipe] local swipe skipped because Baidu is not foreground");
-        XLScheduleNext();
-        return;
-    }
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    BOOL backCheckDueSoon = xlNextBackCheckTime > 0.0 &&
-        xlNextBackCheckTime - now <= XLGestureCooldown;
-    if (xlActionBusy || XLGestureCooldownIsActive() || backCheckDueSoon) {
-        NSLog(@"[XingLanSwipe] local swipe deferred to avoid action conflict");
-        XLScheduleSwipeAfterDelay(XLConflictRetryDelay);
-        return;
-    }
-    xlActionBusy = YES;
-    NSUInteger generation = xlRunGeneration;
-    if (!xlSender) xlSender = [XLHIDSender new];
-    [xlSender performNaturalUpSwipeWithCompletion:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != xlRunGeneration) return;
-            xlActionBusy = NO;
-            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            NSLog(@"[XingLanSwipe] local swipe %@", success ? @"success" : @"failed");
-            if (xlRunning) XLScheduleNext();
-        });
-    }];
-}
-
-static void XLDispatchBackSwipe(BOOL quickVerification) {
-    NSUInteger generation = xlRunGeneration;
-    if (!xlSender) xlSender = [XLHIDSender new];
-    [xlSender performSystemBackSwipeWithCompletion:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != xlRunGeneration) return;
-            xlActionBusy = NO;
-            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
-            if (quickVerification && xlRunning) {
-                XLShowStatusText(success ? @"回✓" : @"回×", 2.0);
-            }
-            if (xlRunning) XLScheduleNextBackSwipe();
-        });
-    }];
-}
-
-static void XLPerformBackSwipe(BOOL quickVerification) {
-    XLCancelBackTimer();
-    if (!xlRunning) return;
-    if (!XLTargetApplicationIsForeground()) {
-        NSLog(@"[XingLanSwipe] back check skipped because Baidu is not foreground");
-        if (quickVerification) XLShowStatusText(@"非百", 4.0);
-        XLScheduleNextBackSwipe();
-        return;
-    }
-    if (xlActionBusy || XLGestureCooldownIsActive()) {
-        NSLog(@"[XingLanSwipe] back check deferred to avoid action conflict");
-        XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay, quickVerification);
-        return;
-    }
-    xlActionBusy = YES;
-    if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
-
-    NSError *captureError = nil;
-    UIImage *screenshot = [xlBackIconDetector captureScreenWithError:&captureError];
-    if (!screenshot) {
-        xlActionBusy = NO;
-        NSLog(@"[XingLanSwipe] screen check skipped: %@",
-              captureError.localizedDescription ?: @"screenshot unavailable");
-        if (quickVerification) XLShowStatusText(@"图错", 3.0);
-        XLScheduleNextBackSwipe();
-        return;
-    }
-
-    NSUInteger generation = xlRunGeneration;
-    dispatch_async(xlImageMatchQueue, ^{
-        @autoreleasepool {
-            NSError *matchError = nil;
-            double score = [xlBackIconDetector matchScoreForScreenshot:screenshot
-                                                                  error:&matchError];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!xlRunning || generation != xlRunGeneration) return;
-                if (matchError) {
-                    xlActionBusy = NO;
-                    NSLog(@"[XingLanSwipe] screen template match failed: %@",
-                          matchError.localizedDescription);
-                    if (quickVerification) XLShowStatusText(@"模错", 3.0);
-                    XLScheduleNextBackSwipe();
-                    return;
-                }
-                if (score >= 0.50) {
-                    xlActionBusy = NO;
-                    NSLog(@"[XingLanSwipe] profile template present (score %.4f); back swipe skipped", score);
-                    if (quickVerification) {
-                        XLShowStatusText(@"有我", 4.0);
-                    }
-                    XLScheduleNextBackSwipe();
-                    return;
-                }
-                NSLog(@"[XingLanSwipe] profile template absent (score %.4f); returning", score);
-                XLDispatchBackSwipe(quickVerification);
-            });
-        }
-    });
-}
-
-static void XLScheduleSwipeAfterDelay(uint32_t delay) {
-    XLCancelTimer();
-    if (!xlRunning) return;
-    NSLog(@"[XingLanSwipe] next local swipe in %u seconds", delay);
-    xlTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-        dispatch_get_main_queue());
-    dispatch_source_set_timer(xlTimer,
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
-        DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
-    dispatch_source_set_event_handler(xlTimer, ^{ XLPerformSwipe(); });
-    dispatch_resume(xlTimer);
-}
-
-static void XLScheduleNext(void) {
-    uint32_t delay = XLMinimumDelay +
-        arc4random_uniform(XLMaximumDelay - XLMinimumDelay + 1);
-    XLScheduleSwipeAfterDelay(delay);
-}
-
-static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification) {
-    XLCancelBackTimer();
-    if (!xlRunning) return;
-    xlNextBackCheckTime = CFAbsoluteTimeGetCurrent() + delay;
-    NSLog(@"[XingLanSwipe] %@ system back check in %u seconds",
-          quickVerification ? @"initial verification" : @"next", delay);
-    xlBackTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-        dispatch_get_main_queue());
-    dispatch_source_set_timer(xlBackTimer,
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
-        DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
-    dispatch_source_set_event_handler(xlBackTimer, ^{ XLPerformBackSwipe(quickVerification); });
-    dispatch_resume(xlBackTimer);
-}
-
-static void XLScheduleNextBackSwipe(void) {
-    uint32_t delay = XLBackMinimumDelay +
-        arc4random_uniform(XLBackMaximumDelay - XLBackMinimumDelay + 1);
-    XLScheduleBackSwipeAfterDelay(delay, NO);
-}
-
-static void XLSetRunning(BOOL running) {
+static void XLWritePreferenceRunning(BOOL running) {
     CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
         running ? kCFBooleanTrue : kCFBooleanFalse,
         CFSTR(XLPreferenceDomain));
     CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+}
 
-    if (xlRunning == running) {
+static BOOL XLWriteWorkerFlag(BOOL running) {
+    NSString *value = running ? @"1\n" : @"0\n";
+    NSString *flagPath = [NSString stringWithUTF8String:XLWorkerRunFlagPath];
+    NSError *error = nil;
+    BOOL success = [value writeToFile:flagPath
+                           atomically:YES
+                             encoding:NSUTF8StringEncoding
+                                error:&error];
+    if (!success) {
+        NSLog(@"[XingLanSwipe] worker flag write failed: %@",
+              error.localizedDescription ?: @"unknown error");
+    }
+    return success;
+}
+
+static void XLUpdateUI(void) {
+    if (!xlHomeStatusLabel) return;
+    xlHomeStatusLabel.hidden = !xlRunning;
+    xlHomeStatusLabel.text = @"开";
+}
+
+static BOOL XLWorkerIsAlive(void) {
+    if (xlWorkerPID <= 0) return NO;
+    if (kill(xlWorkerPID, 0) == 0) return YES;
+    return errno == EPERM;
+}
+
+static void XLCleanupWorkerState(void) {
+    xlWorkerPID = 0;
+    if (xlWorkerExitSource) {
+        dispatch_source_cancel(xlWorkerExitSource);
+        xlWorkerExitSource = nil;
+    }
+}
+
+static void XLHandleWorkerExit(pid_t pid) {
+    int status = 0;
+    (void)waitpid(pid, &status, WNOHANG);
+    if (pid != xlWorkerPID) return;
+
+    XLCleanupWorkerState();
+    if (xlRunning) {
+        xlRunning = NO;
+        XLWritePreferenceRunning(NO);
+        XLWriteWorkerFlag(NO);
+        XLUpdateUI();
+        NSLog(@"[XingLanSwipe] AutoGo worker exited unexpectedly status=%d", status);
+    } else {
+        NSLog(@"[XingLanSwipe] AutoGo worker stopped status=%d", status);
+    }
+}
+
+static BOOL XLStartWorker(void) {
+    if (XLWorkerIsAlive()) {
+        NSLog(@"[XingLanSwipe] AutoGo worker is already running pid=%d", xlWorkerPID);
+        return YES;
+    }
+    XLCleanupWorkerState();
+
+    NSString *executable = [NSString stringWithUTF8String:XLWorkerExecutablePath];
+    if (![NSFileManager.defaultManager isExecutableFileAtPath:executable]) {
+        NSLog(@"[XingLanSwipe] AutoGo worker missing or not executable: %@", executable);
+        return NO;
+    }
+    if (!XLWriteWorkerFlag(YES)) return NO;
+
+    const char *path = executable.fileSystemRepresentation;
+    char *const arguments[] = {(char *)path, NULL};
+    pid_t pid = 0;
+    int result = posix_spawn(&pid, path, NULL, NULL, arguments, environ);
+    if (result != 0 || pid <= 0) {
+        XLWriteWorkerFlag(NO);
+        NSLog(@"[XingLanSwipe] AutoGo worker launch failed result=%d", result);
+        return NO;
+    }
+
+    xlWorkerPID = pid;
+    xlWorkerExitSource = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_PROC,
+        (uintptr_t)pid,
+        DISPATCH_PROC_EXIT,
+        dispatch_get_main_queue());
+    if (xlWorkerExitSource) {
+        dispatch_source_set_event_handler(xlWorkerExitSource, ^{
+            XLHandleWorkerExit(pid);
+        });
+        dispatch_resume(xlWorkerExitSource);
+    }
+
+    NSLog(@"[XingLanSwipe] AutoGo worker started pid=%d", pid);
+    return YES;
+}
+
+static void XLStopWorker(void) {
+    XLWriteWorkerFlag(NO);
+    if (!XLWorkerIsAlive()) {
+        XLCleanupWorkerState();
+        return;
+    }
+
+    pid_t pid = xlWorkerPID;
+    if (kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+        NSLog(@"[XingLanSwipe] AutoGo worker SIGTERM failed pid=%d errno=%d", pid, errno);
+    } else {
+        NSLog(@"[XingLanSwipe] AutoGo worker stop requested pid=%d", pid);
+    }
+}
+
+static void XLSetRunning(BOOL requestedRunning) {
+    if (requestedRunning) {
+        if (xlRunning && XLWorkerIsAlive()) {
+            XLUpdateUI();
+            return;
+        }
+
+        BOOL started = XLStartWorker();
+        xlRunning = started;
+        XLWritePreferenceRunning(started);
         XLUpdateUI();
         return;
     }
 
-    xlRunning = running;
-    xlRunGeneration++;
-    if (xlRunning) {
-        XLScheduleNext();
-        XLScheduleNextBackSwipe();
-        NSLog(@"[XingLanSwipe] started from Control Center");
-    } else {
-        XLCancelTimer();
-        XLCancelBackTimer();
-        xlActionBusy = NO;
-        xlLastGestureEndTime = 0.0;
-        NSLog(@"[XingLanSwipe] stopped");
-    }
+    xlRunning = NO;
+    XLWritePreferenceRunning(NO);
+    XLStopWorker();
     XLUpdateUI();
 }
 
@@ -352,6 +223,7 @@ static void XLInstallStatusOverlay(void) {
         [status.widthAnchor constraintEqualToConstant:54.0],
         [status.heightAnchor constraintEqualToConstant:54.0],
     ]];
+
     xlStatusWindow = window;
     xlHomeStatusLabel = status;
     window.hidden = NO;
@@ -361,19 +233,28 @@ static void XLInstallStatusOverlay(void) {
 static void XLLockCallback(CFNotificationCenterRef center, void *observer,
                            CFStringRef name, const void *object,
                            CFDictionaryRef userInfo) {
-    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    (void)center;
+    (void)observer;
+    (void)name;
+    (void)object;
+    (void)userInfo;
     dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(NO); });
 }
 
 static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *observer,
                                          CFStringRef name, const void *object,
                                          CFDictionaryRef userInfo) {
-    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    (void)center;
+    (void)observer;
+    (void)name;
+    (void)object;
+    (void)userInfo;
+
     CFPropertyListRef value = CFPreferencesCopyAppValue(
         CFSTR(XLRunningPreferenceKey), CFSTR(XLPreferenceDomain));
-    BOOL running = (value && CFEqual(value, kCFBooleanTrue));
+    BOOL requestedRunning = value && CFEqual(value, kCFBooleanTrue);
     if (value) CFRelease(value);
-    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
+    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(requestedRunning); });
 }
 
 __attribute__((constructor))
@@ -381,24 +262,26 @@ static void XingLanSwipeInit(void) {
     @autoreleasepool {
         NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
         if (![bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            xlSender = [XLHIDSender new];
-            xlBackIconDetector = [XLBackIconDetector new];
-            xlImageMatchQueue = dispatch_queue_create(
-                "com.jibeib.xinglanswipe.image-match", DISPATCH_QUEUE_SERIAL);
+            XLWriteWorkerFlag(NO);
+            XLWritePreferenceRunning(NO);
             XLInstallStatusOverlay();
-            XLSetRunning(NO);
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
-                NULL, XLLockCallback,
+                NULL,
+                XLLockCallback,
                 CFSTR("com.apple.springboard.lockcomplete"),
-                NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
-                NULL, XLControlCenterStateCallback,
+                NULL,
+                XLControlCenterStateCallback,
                 CFSTR(XLControlCenterStateNotification),
-                NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-            NSLog(@"[XingLanSwipe] loaded; add the module in Control Center settings");
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately);
+            NSLog(@"[XingLanSwipe] controller loaded; AutoGo worker is stopped");
         });
     }
 }
