@@ -15,7 +15,6 @@ static NSString *const XLStatusPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status";
 static NSString *const XLLogPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker.log";
-static NSString *const XLAutoGoBundleIdentifier = @"com.auto.go";
 static volatile sig_atomic_t XLShouldStop = 0;
 static pid_t XLWorkerPID = 0;
 static NSString *XLLastStatus;
@@ -44,53 +43,15 @@ static BOOL XLWorkerEnabled(void) {
     return [value isEqualToString:@"1"];
 }
 
-static NSString *XLFindAutoGoBundle(void) {
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSString *applicationsRoot = @"/var/containers/Bundle/Application";
-    NSArray<NSString *> *containers =
-        [fileManager contentsOfDirectoryAtPath:applicationsRoot error:nil];
-    for (NSString *containerName in containers) {
-        NSString *containerPath = [applicationsRoot stringByAppendingPathComponent:containerName];
-        NSArray<NSString *> *items =
-            [fileManager contentsOfDirectoryAtPath:containerPath error:nil];
-        for (NSString *item in items) {
-            if (![item.pathExtension.lowercaseString isEqualToString:@"app"]) continue;
-            NSString *bundlePath = [containerPath stringByAppendingPathComponent:item];
-            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
-                [bundlePath stringByAppendingPathComponent:@"Info.plist"]];
-            if (![info[@"CFBundleIdentifier"] isEqualToString:XLAutoGoBundleIdentifier]) continue;
-            NSString *runtime = [bundlePath stringByAppendingPathComponent:@"Runtime"];
-            BOOL isDirectory = NO;
-            if ([fileManager fileExistsAtPath:runtime isDirectory:&isDirectory] && isDirectory) {
-                return bundlePath;
-            }
-        }
-    }
-    return nil;
-}
-
-static NSString *XLTrollStoreWorker(NSString *bundlePath) {
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSString *runtime = [bundlePath stringByAppendingPathComponent:@"Runtime"];
-    NSString *worker = [runtime stringByAppendingPathComponent:@"app"];
-    return [fileManager isExecutableFileAtPath:worker] ? worker : nil;
-}
-
 static BOOL XLStartWorker(void) {
-    NSString *bundlePath = XLFindAutoGoBundle();
-    if (bundlePath.length == 0) {
-        XLWriteStatus(@"E1");
-        return NO;
-    }
-    // Runtime/app is part of the AutoGo IPA and has already been signed by
-    // TrollStore. Do not copy or re-sign it from the RootHide package.
-    NSString *workerPath = XLTrollStoreWorker(bundlePath);
-    if (workerPath.length == 0) {
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSString *runtime = @"/usr/libexec/XingLanAutoGoRuntime";
+    NSString *workerPath = [runtime stringByAppendingPathComponent:@"app"];
+    if (![fileManager isExecutableFileAtPath:workerPath]) {
         XLWriteStatus(@"E2");
         return NO;
     }
 
-    NSString *runtime = [bundlePath stringByAppendingPathComponent:@"Runtime"];
     if (chdir(runtime.fileSystemRepresentation) != 0) {
         XLWriteStatus([NSString stringWithFormat:@"EC%d", errno]);
         return NO;
