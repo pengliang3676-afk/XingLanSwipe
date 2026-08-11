@@ -227,7 +227,7 @@ static void XLRequestAutoGoDebugService(void) {
         NULL, NULL, YES);
 }
 
-static BOOL XLWaitForAutoGoService(void) {
+static BOOL __attribute__((unused)) XLWaitForAutoGoService(void) {
     (void)XLStartAutoGoServicesOnDemand();
     for (NSUInteger attempt = 0; attempt < 50; attempt++) {
         int socketFD = XLConnectAutoGoService();
@@ -406,7 +406,7 @@ static BOOL XLStartRootHideDirectWorker(void) {
 }
 #endif
 
-static BOOL XLUploadWorker(void) {
+static BOOL __attribute__((unused)) XLUploadWorker(void) {
     NSString *workerPath = XLWorkerResourcePath();
     if (!workerPath) {
         NSLog(@"[XingLanSwipe] bundled AutoGo worker is missing");
@@ -461,7 +461,7 @@ static BOOL XLUploadWorker(void) {
     return success;
 }
 
-static BOOL XLRunWorkerSession(void) {
+static BOOL __attribute__((unused)) XLRunWorkerSession(void) {
     int socketFD = XLConnectAutoGoService();
     if (socketFD < 0) return NO;
 
@@ -522,7 +522,7 @@ static BOOL XLRunWorkerSession(void) {
     return YES;
 }
 
-static void XLSendStopCommand(void) {
+static void __attribute__((unused)) XLSendStopCommand(void) {
     int socketFD = XLConnectAutoGoService();
     if (socketFD >= 0) {
         (void)XLSendFrame(socketFD, XLAutoGoStopCommand, NULL, 0);
