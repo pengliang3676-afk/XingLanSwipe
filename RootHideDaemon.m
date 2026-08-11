@@ -4,7 +4,6 @@
 #import <errno.h>
 #import <fcntl.h>
 #import <limits.h>
-#import <libproc.h>
 #import <signal.h>
 #import <spawn.h>
 #import <sys/socket.h>
@@ -15,6 +14,11 @@
 #import <unistd.h>
 
 extern char **environ;
+extern int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
+
+#ifndef PROC_PIDPATHINFO_MAXSIZE
+#define PROC_PIDPATHINFO_MAXSIZE (4 * MAXPATHLEN)
+#endif
 
 static NSString *const XLStatusPath =
     @"/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status";
