@@ -172,10 +172,14 @@ static double XLCorrelationAt(const uint8_t *screen, size_t screenWidth,
 
     size_t searchStartX = MIN(screenWidth - 1,
         (size_t)lround((double)screenWidth * 0.70));
-    size_t searchStartY = MIN(screenHeight - 1,
-        (size_t)lround((double)screenHeight * 0.90));
+    // CGBitmapContext exposes the UIKit screenshot rows bottom-up. The visible
+    // bottom navigation bar therefore lives in the first 10% of this buffer.
+    size_t searchStartY = 0;
     size_t searchEndX = screenWidth > templateWidth ? screenWidth - templateWidth : 0;
-    size_t searchEndY = screenHeight > templateHeight ? screenHeight - templateHeight : 0;
+    size_t bufferBottomEdge = MIN(screenHeight,
+        (size_t)lround((double)screenHeight * 0.10));
+    size_t searchEndY = bufferBottomEdge >= templateHeight ?
+        bufferBottomEdge - templateHeight : 0;
     if (searchStartX > searchEndX || searchStartY > searchEndY) {
         free(screenPixels);
         free(templatePixels);
