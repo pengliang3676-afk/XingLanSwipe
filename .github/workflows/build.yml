@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scheme: [roothide]
+        scheme: [rootless, roothide]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -53,13 +53,19 @@ jobs:
           echo "THEOS=$GITHUB_WORKSPACE/theos-roothide" >> "$GITHUB_ENV"
           echo "THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}" >> "$GITHUB_ENV"
 
-      - name: Select RootHide package layout
+      - name: Select clean package layout
         run: |
-          cp control.roothide control
           rm -f ControlCenterModule/Resources/AutoGoWorker
           rm -rf layout/DEBIAN layout/Library/LaunchDaemons
-          cp -R layout.roothide/. layout/
-          rm -rf layout/Library/LaunchDaemons
+          if [ "${{ matrix.scheme }}" = "roothide" ]; then
+            cp control.roothide control
+            cp -R layout.roothide/. layout/
+            rm -rf layout/Library/LaunchDaemons
+          else
+            mkdir -p layout/DEBIAN
+            printf '#!/bin/sh\nexit 0\n' > layout/DEBIAN/postinst
+            printf '#!/bin/sh\nexit 0\n' > layout/DEBIAN/prerm
+          fi
           chmod 0755 layout/DEBIAN/postinst layout/DEBIAN/prerm
 
       - name: Build package
