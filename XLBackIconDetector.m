@@ -6,8 +6,6 @@
 typedef UIImage *(*XLCreateScreenImageFn)(void);
 
 static NSString *const XLDetectorErrorDomain = @"com.jibeib.xinglanswipe.detector";
-static NSString *const XLModuleBundleIdentifier = @"com.jibeib.xinglanswipe.module";
-
 static void XLSetDetectorError(NSError **error, NSInteger code, NSString *message) {
     if (!error) return;
     *error = [NSError errorWithDomain:XLDetectorErrorDomain
@@ -42,34 +40,6 @@ static CGImageRef XLCreateUprightImage(UIImage *sourceImage) {
     return image;
 }
 
-static UIImage *XLLoadMyTemplateImage(void) {
-    NSBundle *bundle = [NSBundle bundleWithIdentifier:XLModuleBundleIdentifier];
-    NSString *path = [bundle pathForResource:@"my_tab" ofType:@"png"];
-    if (!path) {
-        for (NSBundle *candidate in NSBundle.allBundles) {
-            if ([candidate.bundleIdentifier isEqualToString:XLModuleBundleIdentifier] ||
-                [candidate.bundlePath.lastPathComponent isEqualToString:
-                    @"XingLanSwipeModule.bundle"]) {
-                path = [candidate pathForResource:@"my_tab" ofType:@"png"];
-                if (path) break;
-            }
-        }
-    }
-    if (!path) {
-        NSArray<NSString *> *fallbackPaths = @[
-            @"/var/jb/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png",
-            @"/Library/ControlCenter/Bundles/XingLanSwipeModule.bundle/my_tab.png"
-        ];
-        for (NSString *candidate in fallbackPaths) {
-            if ([NSFileManager.defaultManager fileExistsAtPath:candidate]) {
-                path = candidate;
-                break;
-            }
-        }
-    }
-    return path ? [UIImage imageWithContentsOfFile:path] : nil;
-}
-
 static uint8_t *XLCreateGrayscalePixels(CGImageRef image, size_t width, size_t height) {
     if (!image || width == 0 || height == 0) return NULL;
     uint8_t *pixels = calloc(width * height, sizeof(uint8_t));
@@ -90,30 +60,74 @@ static uint8_t *XLCreateGrayscalePixels(CGImageRef image, size_t width, size_t h
     return pixels;
 }
 
-static double XLCorrelationAt(const uint8_t *screen, size_t screenWidth,
-                              const uint8_t *reference, size_t refWidth,
-                              size_t refHeight, size_t startX, size_t startY) {
-    double screenSum = 0.0, referenceSum = 0.0;
-    double screenSquares = 0.0, referenceSquares = 0.0, products = 0.0;
-    size_t count = refWidth * refHeight;
-    for (size_t y = 0; y < refHeight; y++) {
-        const uint8_t *screenRow = screen + (startY + y) * screenWidth + startX;
-        const uint8_t *referenceRow = reference + y * refWidth;
-        for (size_t x = 0; x < refWidth; x++) {
-            double a = screenRow[x];
-            double b = referenceRow[x];
-            screenSum += a;
-            referenceSum += b;
-            screenSquares += a * a;
-            referenceSquares += b * b;
-            products += a * b;
+static double XLGrayAt(const uint8_t *pixels, size_t width, size_t height,
+                       NSInteger x, NSInteger y) {
+    if (x < 0 || y < 0 || (size_t)x >= width || (size_t)y >= height) return 0.0;
+    return pixels[(size_t)y * width + (size_t)x];
+}
+
+static void XLSobelAt(const uint8_t *pixels, size_t width, size_t height,
+                      NSInteger x, NSInteger y, double *gradientX,
+                      double *gradientY, double *magnitude) {
+    double topLeft = XLGrayAt(pixels, width, height, x - 1, y - 1);
+    double top = XLGrayAt(pixels, width, height, x, y - 1);
+    double topRight = XLGrayAt(pixels, width, height, x + 1, y - 1);
+    double left = XLGrayAt(pixels, width, height, x - 1, y);
+    double right = XLGrayAt(pixels, width, height, x + 1, y);
+    double bottomLeft = XLGrayAt(pixels, width, height, x - 1, y + 1);
+    double bottom = XLGrayAt(pixels, width, height, x, y + 1);
+    double bottomRight = XLGrayAt(pixels, width, height, x + 1, y + 1);
+    double gx = -topLeft - 2.0 * left - bottomLeft +
+                topRight + 2.0 * right + bottomRight;
+    double gy = -topLeft - 2.0 * top - topRight +
+                bottomLeft + 2.0 * bottom + bottomRight;
+    if (gradientX) *gradientX = gx;
+    if (gradientY) *gradientY = gy;
+    if (magnitude) *magnitude = sqrt(gx * gx + gy * gy);
+}
+
+// Matches only the two diagonal strokes of a left-facing chevron. Edge
+// direction and magnitude are used, so neither icon nor background color is
+// fixed.
+static double XLChevronScoreAt(const uint8_t *pixels, size_t width, size_t height,
+                               NSInteger vertexX, NSInteger centerY,
+                               NSInteger armWidth, NSInteger armHeight) {
+    double strengthSum = 0.0;
+    NSUInteger coveredSamples = 0;
+    NSUInteger totalSamples = 0;
+    for (NSInteger sign = -1; sign <= 1; sign += 2) {
+        for (NSInteger distance = 2; distance <= armHeight - 2; distance += 2) {
+            double progress = (double)distance / (double)armHeight;
+            NSInteger expectedX = vertexX + (NSInteger)lround(armWidth * progress);
+            NSInteger expectedY = centerY + sign * distance;
+            double bestStrength = 0.0;
+            for (NSInteger offsetY = -2; offsetY <= 2; offsetY++) {
+                for (NSInteger offsetX = -2; offsetX <= 2; offsetX++) {
+                    double gx = 0.0, gy = 0.0, magnitude = 0.0;
+                    XLSobelAt(pixels, width, height,
+                              expectedX + offsetX, expectedY + offsetY,
+                              &gx, &gy, &magnitude);
+                    if (magnitude < 1.0) continue;
+                    double normalX = -sign * armHeight;
+                    double normalY = armWidth;
+                    double normalLength = sqrt(normalX * normalX + normalY * normalY);
+                    double directionAgreement = fabs(
+                        (gx * normalX + gy * normalY) /
+                        (magnitude * normalLength));
+                    double strength = magnitude * directionAgreement;
+                    if (strength > bestStrength) bestStrength = strength;
+                }
+            }
+            strengthSum += bestStrength;
+            if (bestStrength >= 160.0) coveredSamples++;
+            totalSamples++;
         }
     }
-    double screenVariance = screenSquares - screenSum * screenSum / count;
-    double referenceVariance = referenceSquares - referenceSum * referenceSum / count;
-    if (screenVariance <= 1.0 || referenceVariance <= 1.0) return 0.0;
-    double covariance = products - screenSum * referenceSum / count;
-    return MAX(0.0, covariance / sqrt(screenVariance * referenceVariance));
+    if (totalSamples == 0) return 0.0;
+    double averageStrength = strengthSum / totalSamples;
+    double strengthScore = MIN(1.0, averageStrength / 420.0);
+    double coverageScore = (double)coveredSamples / totalSamples;
+    return 0.55 * strengthScore + 0.45 * coverageScore;
 }
 
 @implementation XLBackIconDetector
@@ -140,13 +154,6 @@ static double XLCorrelationAt(const uint8_t *screen, size_t screenWidth,
         return -1.0;
     }
 
-    UIImage *templateImage = XLLoadMyTemplateImage();
-    if (!templateImage.CGImage) {
-        CGImageRelease(screenImage);
-        XLSetDetectorError(error, 4, @"my template unavailable");
-        return -1.0;
-    }
-
     size_t screenWidth = CGImageGetWidth(screenImage);
     size_t screenHeight = CGImageGetHeight(screenImage);
     if (screenWidth == 0 || screenHeight == 0) {
@@ -155,75 +162,50 @@ static double XLCorrelationAt(const uint8_t *screen, size_t screenWidth,
         return -1.0;
     }
 
-    double widthScale = (double)screenWidth / 750.0;
-    size_t templateWidth = MAX(8, (size_t)lround(86.0 * widthScale));
-    size_t templateHeight = MAX(5, (size_t)lround(40.0 * widthScale));
     uint8_t *screenPixels = XLCreateGrayscalePixels(
         screenImage, screenWidth, screenHeight);
-    uint8_t *templatePixels = XLCreateGrayscalePixels(
-        templateImage.CGImage, templateWidth, templateHeight);
     CGImageRelease(screenImage);
-    if (!screenPixels || !templatePixels) {
+    if (!screenPixels) {
         free(screenPixels);
-        free(templatePixels);
         XLSetDetectorError(error, 6, @"could not prepare grayscale images");
         return -1.0;
     }
 
-    size_t searchStartX = MIN(screenWidth - 1,
-        (size_t)lround((double)screenWidth * 0.70));
-    // CGBitmapContext exposes the UIKit screenshot rows bottom-up. The visible
-    // bottom navigation bar therefore lives in the first 10% of this buffer.
-    size_t searchStartY = 0;
-    size_t searchEndX = screenWidth > templateWidth ? screenWidth - templateWidth : 0;
-    size_t bufferBottomEdge = MIN(screenHeight,
-        (size_t)lround((double)screenHeight * 0.10));
-    size_t searchEndY = bufferBottomEdge >= templateHeight ?
-        bufferBottomEdge - templateHeight : 0;
-    if (searchStartX > searchEndX || searchStartY > searchEndY) {
-        free(screenPixels);
-        free(templatePixels);
-        XLSetDetectorError(error, 7, @"screen is smaller than search area");
-        return -1.0;
-    }
-
+    double widthScale = (double)screenWidth / 750.0;
+    double heightScale = (double)screenHeight / 1334.0;
     double bestScore = 0.0;
-    size_t bestX = searchStartX, bestY = searchStartY;
-    for (size_t y = searchStartY; y <= searchEndY; y += 2) {
-        for (size_t x = searchStartX; x <= searchEndX; x += 2) {
-            double score = XLCorrelationAt(screenPixels, screenWidth,
-                                           templatePixels, templateWidth,
-                                           templateHeight, x, y);
-            if (score > bestScore) {
-                bestScore = score;
-                bestX = x;
-                bestY = y;
-            }
-        }
-    }
-
-    size_t refineStartX = MAX(searchStartX, bestX > 3 ? bestX - 3 : 0);
-    size_t refineStartY = MAX(searchStartY, bestY > 3 ? bestY - 3 : 0);
-    size_t refineEndX = MIN(searchEndX, bestX + 3);
-    size_t refineEndY = MIN(searchEndY, bestY + 3);
-    for (size_t y = refineStartY; y <= refineEndY; y++) {
-        for (size_t x = refineStartX; x <= refineEndX; x++) {
-            double score = XLCorrelationAt(screenPixels, screenWidth,
-                                           templatePixels, templateWidth,
-                                           templateHeight, x, y);
-            if (score > bestScore) {
-                bestScore = score;
-                bestX = x;
-                bestY = y;
+    NSInteger bestX = 0, bestY = 0, bestWidth = 0, bestHeight = 0;
+    // The fixed SE2 region is visible x=38..60 and y=1266..1306 in a
+    // 750x1334 screenshot. The grayscale bitmap rows are vertically flipped.
+    NSInteger xStep = MAX(1, (NSInteger)lround(2.0 * widthScale));
+    NSInteger yStep = MAX(1, (NSInteger)lround(2.0 * heightScale));
+    for (NSInteger vertexX = (NSInteger)lround(32.0 * widthScale);
+         vertexX <= (NSInteger)lround(46.0 * widthScale); vertexX += xStep) {
+        for (NSInteger centerY = (NSInteger)lround(40.0 * heightScale);
+             centerY <= (NSInteger)lround(56.0 * heightScale); centerY += yStep) {
+            for (NSInteger armWidth = (NSInteger)lround(16.0 * widthScale);
+                 armWidth <= (NSInteger)lround(26.0 * widthScale); armWidth += xStep) {
+                for (NSInteger armHeight = (NSInteger)lround(16.0 * heightScale);
+                     armHeight <= (NSInteger)lround(26.0 * heightScale); armHeight += yStep) {
+                    double score = XLChevronScoreAt(
+                        screenPixels, screenWidth, screenHeight,
+                        vertexX, centerY, armWidth, armHeight);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestX = vertexX;
+                        bestY = centerY;
+                        bestWidth = armWidth;
+                        bestHeight = armHeight;
+                    }
+                }
             }
         }
     }
 
     free(screenPixels);
-    free(templatePixels);
-    NSLog(@"[XingLanSwipe] local my-template score=%.4f position=%zux%zu screen=%zux%zu template=%zux%zu",
-          bestScore, bestX, bestY, screenWidth, screenHeight,
-          templateWidth, templateHeight);
+    NSLog(@"[XingLanSwipe] local back-chevron score=%.4f vertex=%ldx%ld arms=%ldx%ld screen=%zux%zu",
+          bestScore, (long)bestX, (long)bestY, (long)bestWidth,
+          (long)bestHeight, screenWidth, screenHeight);
     return bestScore;
 }
 

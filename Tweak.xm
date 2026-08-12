@@ -8,13 +8,13 @@
 
 static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
-static const uint32_t XLBackMinimumDelay = 300;
-static const uint32_t XLBackMaximumDelay = 600;
+static const uint32_t XLBackMinimumDelay = 10;
+static const uint32_t XLBackMaximumDelay = 20;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 static const NSUInteger XLBackRecognitionAttempts = 3;
 static const NSTimeInterval XLBackRecognitionInterval = 1.0;
-static const double XLMyTemplateThreshold = 0.70;
+static const double XLBackChevronThreshold = 0.65;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
@@ -84,6 +84,7 @@ static void XLPerformBackSwipe(BOOL quickVerification);
 static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                                             BOOL quickVerification,
                                             NSUInteger attempt,
+                                            NSUInteger detectedCount,
                                             double bestScore);
 
 static BOOL XLGestureCooldownIsActive(void) {
@@ -136,6 +137,7 @@ static void XLDispatchBackSwipe(BOOL quickVerification) {
 static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                                             BOOL quickVerification,
                                             NSUInteger attempt,
+                                            NSUInteger detectedCount,
                                             double bestScore) {
     if (!xlRunning || generation != xlRunGeneration) return;
     NSError *captureError = nil;
@@ -155,7 +157,7 @@ static void XLPerformBackRecognitionAttempt(NSUInteger generation,
             NSError *matchError = nil;
             double matchScore = [xlBackIconDetector matchScoreForScreenshot:screenshot
                                                                        error:&matchError];
-            BOOL myTextFound = !matchError && matchScore >= XLMyTemplateThreshold;
+            BOOL chevronFound = !matchError && matchScore >= XLBackChevronThreshold;
             NSInteger matchPercent = MAX(0, MIN(99,
                 (NSInteger)lround(matchScore * 100.0)));
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -169,23 +171,15 @@ static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                     XLScheduleNextBackSwipe();
                     return;
                 }
-                if (myTextFound) {
-                    xlActionBusy = NO;
-                    NSLog(@"[XingLanSwipe] text '我的' present on attempt %lu score=%.4f; back swipe skipped",
-                          (unsigned long)(attempt + 1), matchScore);
-                    if (quickVerification) {
-                        XLShowStatusText([NSString stringWithFormat:@"有%ld",
-                                          (long)matchPercent], 4.0);
-                    }
-                    XLScheduleNextBackSwipe();
-                    return;
-                }
                 double nextBestScore = MAX(bestScore, matchScore);
+                NSUInteger nextDetectedCount = detectedCount + (chevronFound ? 1 : 0);
                 NSUInteger nextAttempt = attempt + 1;
-                NSLog(@"[XingLanSwipe] text '我的' absent on attempt %lu/%lu score=%.4f",
+                NSLog(@"[XingLanSwipe] back chevron %@ on attempt %lu/%lu score=%.4f detected=%lu",
+                      chevronFound ? @"present" : @"absent",
                       (unsigned long)nextAttempt,
                       (unsigned long)XLBackRecognitionAttempts,
-                      matchScore);
+                      matchScore,
+                      (unsigned long)nextDetectedCount);
                 if (nextAttempt < XLBackRecognitionAttempts) {
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                                  (int64_t)(XLBackRecognitionInterval * NSEC_PER_SEC)),
@@ -193,18 +187,30 @@ static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                         XLPerformBackRecognitionAttempt(generation,
                                                         quickVerification,
                                                         nextAttempt,
+                                                        nextDetectedCount,
                                                         nextBestScore);
                     });
                     return;
                 }
 
-                NSInteger bestPercent = MAX(0, MIN(99,
-                    (NSInteger)lround(nextBestScore * 100.0)));
-                NSLog(@"[XingLanSwipe] text '我的' absent in all %lu attempts best=%.4f; returning",
-                      (unsigned long)XLBackRecognitionAttempts, nextBestScore);
+                BOOL shouldReturn = nextDetectedCount >= 2;
+                NSLog(@"[XingLanSwipe] back chevron final detected=%lu/%lu best=%.4f; %@",
+                      (unsigned long)nextDetectedCount,
+                      (unsigned long)XLBackRecognitionAttempts,
+                      nextBestScore,
+                      shouldReturn ? @"returning" : @"swipe cancelled");
+                if (!shouldReturn) {
+                    xlActionBusy = NO;
+                    if (quickVerification) {
+                        XLShowStatusText([NSString stringWithFormat:@"无%ld",
+                                          (long)matchPercent], 3.0);
+                    }
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
                 if (quickVerification) {
-                    XLShowStatusText([NSString stringWithFormat:@"无%ld",
-                                      (long)bestPercent], 0.8);
+                    XLShowStatusText([NSString stringWithFormat:@"返%lu",
+                                      (unsigned long)nextDetectedCount], 0.8);
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                                  (int64_t)(0.8 * NSEC_PER_SEC)),
                                    dispatch_get_main_queue(), ^{
@@ -230,7 +236,7 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
     }
     xlActionBusy = YES;
     if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
-    XLPerformBackRecognitionAttempt(xlRunGeneration, quickVerification, 0, 0.0);
+    XLPerformBackRecognitionAttempt(xlRunGeneration, quickVerification, 0, 0, 0.0);
 }
 
 static void XLScheduleSwipeAfterDelay(uint32_t delay) {
