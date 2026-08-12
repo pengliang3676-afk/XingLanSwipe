@@ -8,8 +8,8 @@
 
 static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
-static const uint32_t XLBackMinimumDelay = 10;
-static const uint32_t XLBackMaximumDelay = 20;
+static const uint32_t XLBackMinimumDelay = 600;
+static const uint32_t XLBackMaximumDelay = 900;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 static const NSUInteger XLBackRecognitionAttempts = 3;
