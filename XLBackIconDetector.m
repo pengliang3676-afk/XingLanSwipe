@@ -147,7 +147,10 @@ static double XLChevronScoreAt(const uint8_t *pixels, size_t width, size_t heigh
     return image;
 }
 
-- (double)matchScoreForScreenshot:(UIImage *)screenshot error:(NSError **)error {
+- (double)matchScoreForScreenshot:(UIImage *)screenshot
+                  normalizedCenter:(CGPoint *)normalizedCenter
+                              error:(NSError **)error {
+    if (normalizedCenter) *normalizedCenter = CGPointZero;
     CGImageRef screenImage = XLCreateUprightImage(screenshot);
     if (!screenImage) {
         XLSetDetectorError(error, 3, @"screen image unavailable");
@@ -203,6 +206,12 @@ static double XLChevronScoreAt(const uint8_t *pixels, size_t width, size_t heigh
     }
 
     free(screenPixels);
+    double visibleCenterX = bestX + bestWidth * 0.5;
+    double visibleCenterY = screenHeight - bestY;
+    if (normalizedCenter) {
+        *normalizedCenter = CGPointMake(visibleCenterX / screenWidth,
+                                        visibleCenterY / screenHeight);
+    }
     NSLog(@"[XingLanSwipe] local back-chevron score=%.4f vertex=%ldx%ld arms=%ldx%ld screen=%zux%zu",
           bestScore, (long)bestX, (long)bestY, (long)bestWidth,
           (long)bestHeight, screenWidth, screenHeight);

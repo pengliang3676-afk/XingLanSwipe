@@ -8,8 +8,8 @@
 
 static const uint32_t XLMinimumDelay = 180;
 static const uint32_t XLMaximumDelay = 300;
-static const uint32_t XLBackMinimumDelay = 600;
-static const uint32_t XLBackMaximumDelay = 900;
+static const uint32_t XLBackMinimumDelay = 10;
+static const uint32_t XLBackMaximumDelay = 20;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 static const NSUInteger XLBackRecognitionAttempts = 3;
@@ -84,7 +84,7 @@ static void XLPerformBackSwipe(BOOL quickVerification);
 static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                                             BOOL quickVerification,
                                             NSUInteger attempt,
-                                            NSUInteger detectedCount,
+                                            NSArray<NSValue *> *detectedCenters,
                                             double bestScore);
 
 static BOOL XLGestureCooldownIsActive(void) {
@@ -117,17 +117,77 @@ static void XLPerformSwipe(void) {
     }];
 }
 
-static void XLDispatchBackSwipe(BOOL quickVerification) {
+static CGPoint XLStableCenter(NSArray<NSValue *> *centers) {
+    if (centers.count == 0) return CGPointZero;
+    if (centers.count == 1) return centers.firstObject.CGPointValue;
+    if (centers.count == 2) {
+        CGPoint first = centers[0].CGPointValue;
+        CGPoint second = centers[1].CGPointValue;
+        return CGPointMake((first.x + second.x) * 0.5,
+                           (first.y + second.y) * 0.5);
+    }
+    NSMutableArray<NSNumber *> *xs = [NSMutableArray arrayWithCapacity:centers.count];
+    NSMutableArray<NSNumber *> *ys = [NSMutableArray arrayWithCapacity:centers.count];
+    for (NSValue *value in centers) {
+        CGPoint point = value.CGPointValue;
+        [xs addObject:@(point.x)];
+        [ys addObject:@(point.y)];
+    }
+    [xs sortUsingSelector:@selector(compare:)];
+    [ys sortUsingSelector:@selector(compare:)];
+    NSUInteger middle = centers.count / 2;
+    return CGPointMake(xs[middle].doubleValue, ys[middle].doubleValue);
+}
+
+static NSInteger XLRandomSignedOffset(NSUInteger radius) {
+    return (NSInteger)arc4random_uniform((uint32_t)(radius * 2 + 1)) -
+        (NSInteger)radius;
+}
+
+static void XLDispatchBackTap(CGPoint detectedCenter, BOOL quickVerification) {
     NSUInteger generation = xlRunGeneration;
     if (!xlSender) xlSender = [XLHIDSender new];
-    [xlSender performSystemBackSwipeWithCompletion:^(BOOL success) {
+    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    if (screenSize.width <= 0.0 || screenSize.height <= 0.0 ||
+        detectedCenter.x < 0.03 || detectedCenter.x > 0.12 ||
+        detectedCenter.y < 0.90 || detectedCenter.y > 0.99) {
+        xlActionBusy = NO;
+        NSLog(@"[XingLanSwipe] detected chevron center outside safe region: %.4fx%.4f",
+              detectedCenter.x, detectedCenter.y);
+        if (quickVerification) XLShowStatusText(@"点错", 3.0);
+        if (xlRunning) XLScheduleNextBackSwipe();
+        return;
+    }
+
+    CGPoint tapPoint = CGPointZero;
+    BOOL validTapPoint = NO;
+    for (NSUInteger attempt = 0; attempt < 16; attempt++) {
+        double x = detectedCenter.x + XLRandomSignedOffset(8) / screenSize.width;
+        double y = detectedCenter.y + XLRandomSignedOffset(6) / screenSize.height;
+        if (x >= 0.02 && x <= 0.14 && y >= 0.90 && y <= 0.99) {
+            tapPoint = CGPointMake(x, y);
+            validTapPoint = YES;
+            break;
+        }
+    }
+    if (!validTapPoint) {
+        xlActionBusy = NO;
+        NSLog(@"[XingLanSwipe] could not generate safe randomized tap point");
+        if (quickVerification) XLShowStatusText(@"点错", 3.0);
+        if (xlRunning) XLScheduleNextBackSwipe();
+        return;
+    }
+
+    NSLog(@"[XingLanSwipe] tapping detected chevron center=%.4fx%.4f final=%.4fx%.4f",
+          detectedCenter.x, detectedCenter.y, tapPoint.x, tapPoint.y);
+    [xlSender performTapAtNormalizedX:tapPoint.x y:tapPoint.y completion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != xlRunGeneration) return;
             xlActionBusy = NO;
             xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
+            NSLog(@"[XingLanSwipe] back-chevron tap %@", success ? @"success" : @"failed");
             if (quickVerification && xlRunning) {
-                XLShowStatusText(success ? @"回✓" : @"回×", 2.0);
+                XLShowStatusText(success ? @"点✓" : @"点×", 2.0);
             }
             if (xlRunning) XLScheduleNextBackSwipe();
         });
@@ -137,7 +197,7 @@ static void XLDispatchBackSwipe(BOOL quickVerification) {
 static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                                             BOOL quickVerification,
                                             NSUInteger attempt,
-                                            NSUInteger detectedCount,
+                                            NSArray<NSValue *> *detectedCenters,
                                             double bestScore) {
     if (!xlRunning || generation != xlRunGeneration) return;
     NSError *captureError = nil;
@@ -155,7 +215,9 @@ static void XLPerformBackRecognitionAttempt(NSUInteger generation,
     dispatch_async(xlImageMatchQueue, ^{
         @autoreleasepool {
             NSError *matchError = nil;
+            CGPoint matchedCenter = CGPointZero;
             double matchScore = [xlBackIconDetector matchScoreForScreenshot:screenshot
+                                                           normalizedCenter:&matchedCenter
                                                                        error:&matchError];
             BOOL chevronFound = !matchError && matchScore >= XLBackChevronThreshold;
             NSInteger matchPercent = MAX(0, MIN(99,
@@ -172,7 +234,12 @@ static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                     return;
                 }
                 double nextBestScore = MAX(bestScore, matchScore);
-                NSUInteger nextDetectedCount = detectedCount + (chevronFound ? 1 : 0);
+                NSMutableArray<NSValue *> *nextCenters =
+                    [detectedCenters mutableCopy] ?: [NSMutableArray array];
+                if (chevronFound) {
+                    [nextCenters addObject:[NSValue valueWithCGPoint:matchedCenter]];
+                }
+                NSUInteger nextDetectedCount = nextCenters.count;
                 NSUInteger nextAttempt = attempt + 1;
                 NSLog(@"[XingLanSwipe] back chevron %@ on attempt %lu/%lu score=%.4f detected=%lu",
                       chevronFound ? @"present" : @"absent",
@@ -187,7 +254,7 @@ static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                         XLPerformBackRecognitionAttempt(generation,
                                                         quickVerification,
                                                         nextAttempt,
-                                                        nextDetectedCount,
+                                                        [nextCenters copy],
                                                         nextBestScore);
                     });
                     return;
@@ -208,18 +275,19 @@ static void XLPerformBackRecognitionAttempt(NSUInteger generation,
                     XLScheduleNextBackSwipe();
                     return;
                 }
+                CGPoint stableCenter = XLStableCenter(nextCenters);
                 if (quickVerification) {
-                    XLShowStatusText([NSString stringWithFormat:@"返%lu",
+                    XLShowStatusText([NSString stringWithFormat:@"点%lu",
                                       (unsigned long)nextDetectedCount], 0.8);
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                                  (int64_t)(0.8 * NSEC_PER_SEC)),
                                    dispatch_get_main_queue(), ^{
                         if (xlRunning && generation == xlRunGeneration) {
-                            XLDispatchBackSwipe(YES);
+                            XLDispatchBackTap(stableCenter, YES);
                         }
                     });
                 } else {
-                    XLDispatchBackSwipe(NO);
+                    XLDispatchBackTap(stableCenter, NO);
                 }
             });
         }
@@ -236,7 +304,7 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
     }
     xlActionBusy = YES;
     if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
-    XLPerformBackRecognitionAttempt(xlRunGeneration, quickVerification, 0, 0, 0.0);
+    XLPerformBackRecognitionAttempt(xlRunGeneration, quickVerification, 0, @[], 0.0);
 }
 
 static void XLScheduleSwipeAfterDelay(uint32_t delay) {
