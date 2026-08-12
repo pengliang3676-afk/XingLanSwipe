@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.4.0-test3
+Version: 2.4.0-rc1
 Architecture: iphoneos-arm64e
-Description: RootHide 本地图案匹配单机验证版。修正截图像素缓冲区上下方向后，仅检测一次右下角“我的”并显示匹配分数，不执行任何滑动，不依赖 AutoGo 或 Vision。
+Description: RootHide 原生候选正式版。控制中心启停；10 秒验证上滑、20 秒验证本地图案识别和条件返回，随后上滑 180–300 秒、返回检查 300–600 秒；不依赖 AutoGo 或 Vision。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks

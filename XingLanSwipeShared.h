@@ -3,24 +3,3 @@
 #define XLPreferenceDomain "com.jibeib.xinglanswipe"
 #define XLRunningPreferenceKey "running"
 #define XLControlCenterStateNotification "com.jibeib.xinglanswipe.state-changed"
-#define XLWorkerRunFlagPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.worker"
-#define XLWorkerCleanupRequestPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.cleanup-request"
-#define XLWorkerCleanupAckPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.cleanup-ack"
-#define XLRootHideDaemonStatusPath "/var/mobile/Library/Preferences/com.jibeib.xinglanswipe.daemon.status"
-
-#define XLAutoGoDebugEnableNotification "com.autogo.floatball.debug.enable_request"
-#define XLAutoGoDebugDisableNotification "com.autogo.floatball.debug.disable_request"
-#define XLAutoGoRemoteDebugDisableNotification "com.autogo.floatball.remote_debug.disable_request"
-#define XLAutoGoBundleIdentifier "com.auto.go"
-#define XLControlCenterBundleIdentifier "com.jibeib.xinglanswipe.module"
-
-#define XLAutoGoServicePort 8820
-#define XLMaximumAutoGoFrameSize (16 * 1024 * 1024)
-#define XLAutoGoPushCommand 1
-#define XLAutoGoAckCommand 2
-#define XLAutoGoSyncDoneCommand 3
-#define XLAutoGoSyncDoneAckCommand 4
-#define XLAutoGoRunCommand 5
-#define XLAutoGoStopCommand 6
-#define XLAutoGoLogCommand 7
-#define XLAutoGoExitCommand 8

@@ -2,101 +2,276 @@
 #import <Foundation/Foundation.h>
 #import <math.h>
 #import <notify.h>
+#import "XLHIDSender.h"
 #import "XLBackIconDetector.h"
 #import "XingLanSwipeShared.h"
 
-static const NSTimeInterval XLRecognitionDelay = 4.0;
+static const uint32_t XLMinimumDelay = 180;
+static const uint32_t XLMaximumDelay = 300;
+static const uint32_t XLBackMinimumDelay = 300;
+static const uint32_t XLBackMaximumDelay = 600;
+static const uint32_t XLInitialSwipeVerificationDelay = 10;
+static const uint32_t XLInitialBackVerificationDelay = 20;
+static const uint32_t XLConflictRetryDelay = 5;
+static const CFTimeInterval XLGestureCooldown = 5.0;
 
+static dispatch_source_t xlTimer;
+static dispatch_source_t xlBackTimer;
+static XLHIDSender *xlSender;
+static XLBackIconDetector *xlBackIconDetector;
+static dispatch_queue_t xlImageMatchQueue;
 static BOOL xlRunning = NO;
+static BOOL xlActionBusy = NO;
 static NSUInteger xlRunGeneration = 0;
-static XLBackIconDetector *xlDetector;
-static dispatch_queue_t xlRecognitionQueue;
+static CFAbsoluteTime xlLastGestureEndTime = 0.0;
+static CFAbsoluteTime xlNextBackCheckTime = 0.0;
 static UIWindow *xlStatusWindow;
-static UILabel *xlStatusLabel;
+static UILabel *xlHomeStatusLabel;
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
 
 @implementation XLStatusOverlayWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    (void)point;
-    (void)event;
+    (void)point; (void)event;
     return nil;
 }
 @end
 
-static void XLWriteRunningPreference(BOOL running) {
-    CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
-        running ? kCFBooleanTrue : kCFBooleanFalse,
-        CFSTR(XLPreferenceDomain));
-    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+static void XLUpdateUI(void) {
+    UILabel *status = xlHomeStatusLabel;
+    if (status) {
+        status.hidden = !xlRunning;
+        status.text = @"开";
+    }
 }
 
-static void XLSetStatus(NSString *text) {
-    if (!xlStatusLabel) return;
-    xlStatusLabel.hidden = !xlRunning;
-    xlStatusLabel.text = text ?: @"";
+static void XLShowStatusText(NSString *text, NSTimeInterval duration) {
+    UILabel *status = xlHomeStatusLabel;
+    if (!status || !xlRunning) return;
+
+    status.hidden = NO;
+    status.text = text;
+    NSUInteger generation = xlRunGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(duration * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (xlRunning && generation == xlRunGeneration) XLUpdateUI();
+    });
 }
 
-static void XLPerformOneShotRecognition(NSUInteger generation) {
-    if (!xlRunning || generation != xlRunGeneration) return;
+static void XLCancelTimer(void) {
+    if (xlTimer) {
+        dispatch_source_cancel(xlTimer);
+        xlTimer = nil;
+    }
+}
 
-    XLSetStatus(@"识");
+static void XLCancelBackTimer(void) {
+    if (xlBackTimer) {
+        dispatch_source_cancel(xlBackTimer);
+        xlBackTimer = nil;
+    }
+    xlNextBackCheckTime = 0.0;
+}
+
+static void XLScheduleNext(void);
+static void XLScheduleSwipeAfterDelay(uint32_t delay);
+static void XLScheduleNextBackSwipe(void);
+static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification);
+static void XLPerformBackSwipe(BOOL quickVerification);
+
+static BOOL XLGestureCooldownIsActive(void) {
+    if (xlLastGestureEndTime <= 0.0) return NO;
+    return CFAbsoluteTimeGetCurrent() - xlLastGestureEndTime < XLGestureCooldown;
+}
+
+static void XLPerformSwipe(void) {
+    XLCancelTimer();
+    if (!xlRunning) return;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    BOOL backCheckDueSoon = xlNextBackCheckTime > 0.0 &&
+        xlNextBackCheckTime - now <= XLGestureCooldown;
+    if (xlActionBusy || XLGestureCooldownIsActive() || backCheckDueSoon) {
+        NSLog(@"[XingLanSwipe] local swipe deferred to avoid action conflict");
+        XLScheduleSwipeAfterDelay(XLConflictRetryDelay);
+        return;
+    }
+    xlActionBusy = YES;
+    NSUInteger generation = xlRunGeneration;
+    if (!xlSender) xlSender = [XLHIDSender new];
+    [xlSender performNaturalUpSwipeWithCompletion:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != xlRunGeneration) return;
+            xlActionBusy = NO;
+            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+            NSLog(@"[XingLanSwipe] local swipe %@", success ? @"success" : @"failed");
+            if (xlRunning) XLScheduleNext();
+        });
+    }];
+}
+
+static void XLDispatchBackSwipe(BOOL quickVerification) {
+    NSUInteger generation = xlRunGeneration;
+    if (!xlSender) xlSender = [XLHIDSender new];
+    [xlSender performSystemBackSwipeWithCompletion:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != xlRunGeneration) return;
+            xlActionBusy = NO;
+            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+            NSLog(@"[XingLanSwipe] system back swipe %@", success ? @"success" : @"failed");
+            if (quickVerification && xlRunning) {
+                XLShowStatusText(success ? @"回✓" : @"回×", 2.0);
+            }
+            if (xlRunning) XLScheduleNextBackSwipe();
+        });
+    }];
+}
+
+static void XLPerformBackSwipe(BOOL quickVerification) {
+    XLCancelBackTimer();
+    if (!xlRunning) return;
+    if (xlActionBusy || XLGestureCooldownIsActive()) {
+        NSLog(@"[XingLanSwipe] back check deferred to avoid action conflict");
+        XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay, quickVerification);
+        return;
+    }
+    xlActionBusy = YES;
+    if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
+
     NSError *captureError = nil;
-    UIImage *screenshot = [xlDetector captureScreenWithError:&captureError];
+    UIImage *screenshot = [xlBackIconDetector captureScreenWithError:&captureError];
     if (!screenshot) {
-        NSLog(@"[XingLanSwipe] native capture failed: %@",
-              captureError.localizedDescription ?: @"unknown error");
-        XLSetStatus(@"图错");
+        xlActionBusy = NO;
+        NSLog(@"[XingLanSwipe] screen check skipped: %@",
+              captureError.localizedDescription ?: @"screenshot unavailable");
+        if (quickVerification) XLShowStatusText(@"图错", 3.0);
+        XLScheduleNextBackSwipe();
         return;
     }
 
-    dispatch_async(xlRecognitionQueue, ^{
+    NSUInteger generation = xlRunGeneration;
+    dispatch_async(xlImageMatchQueue, ^{
         @autoreleasepool {
-            NSError *recognitionError = nil;
-            double score = [xlDetector matchScoreForScreenshot:screenshot
-                                                          error:&recognitionError];
+            NSError *matchError = nil;
+            double matchScore = [xlBackIconDetector matchScoreForScreenshot:screenshot
+                                                                       error:&matchError];
+            BOOL myTextFound = !matchError && matchScore >= 0.70;
+            NSInteger matchPercent = MAX(0, MIN(99,
+                (NSInteger)lround(matchScore * 100.0)));
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!xlRunning || generation != xlRunGeneration) return;
-                if (recognitionError) {
-                    NSLog(@"[XingLanSwipe] local template match failed: %@",
-                          recognitionError.localizedDescription ?: @"unknown error");
-                    XLSetStatus(@"模错");
+                if (matchError) {
+                    xlActionBusy = NO;
+                    NSLog(@"[XingLanSwipe] screen template match failed: %@",
+                          matchError.localizedDescription);
+                    if (quickVerification) XLShowStatusText(@"模错", 3.0);
+                    XLScheduleNextBackSwipe();
                     return;
                 }
-
-                BOOL found = score >= 0.70;
-                NSInteger percent = MAX(0, MIN(99, (NSInteger)lround(score * 100.0)));
-                NSLog(@"[XingLanSwipe] local MY template score=%.4f result=%@",
-                      score, found ? @"MY_FOUND" : @"MY_NOT_FOUND");
-                XLSetStatus([NSString stringWithFormat:found ? @"有%ld" : @"无%ld",
-                             (long)percent]);
+                if (myTextFound) {
+                    xlActionBusy = NO;
+                    NSLog(@"[XingLanSwipe] text '我的' present score=%.4f; back swipe skipped",
+                          matchScore);
+                    if (quickVerification) {
+                        XLShowStatusText([NSString stringWithFormat:@"有%ld",
+                                          (long)matchPercent], 4.0);
+                    }
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
+                NSLog(@"[XingLanSwipe] text '我的' absent score=%.4f; returning",
+                      matchScore);
+                if (quickVerification) {
+                    XLShowStatusText([NSString stringWithFormat:@"无%ld",
+                                      (long)matchPercent], 0.8);
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                                 (int64_t)(0.8 * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        if (xlRunning && generation == xlRunGeneration) {
+                            XLDispatchBackSwipe(YES);
+                        }
+                    });
+                } else {
+                    XLDispatchBackSwipe(NO);
+                }
             });
         }
     });
 }
 
-static void XLSetRunning(BOOL running) {
-    xlRunGeneration++;
-    xlRunning = running;
-    XLWriteRunningPreference(running);
+static void XLScheduleSwipeAfterDelay(uint32_t delay) {
+    XLCancelTimer();
+    if (!xlRunning) return;
+    NSLog(@"[XingLanSwipe] next local swipe in %u seconds", delay);
+    xlTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+        dispatch_get_main_queue());
+    dispatch_source_set_timer(xlTimer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
+        DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
+    dispatch_source_set_event_handler(xlTimer, ^{ XLPerformSwipe(); });
+    dispatch_resume(xlTimer);
+}
 
-    if (!running) {
-        XLSetStatus(nil);
+static void XLScheduleNext(void) {
+    uint32_t delay = XLMinimumDelay +
+        arc4random_uniform(XLMaximumDelay - XLMinimumDelay + 1);
+    XLScheduleSwipeAfterDelay(delay);
+}
+
+static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification) {
+    XLCancelBackTimer();
+    if (!xlRunning) return;
+    xlNextBackCheckTime = CFAbsoluteTimeGetCurrent() + delay;
+    NSLog(@"[XingLanSwipe] %@ system back check in %u seconds",
+          quickVerification ? @"initial verification" : @"next", delay);
+    xlBackTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+        dispatch_get_main_queue());
+    dispatch_source_set_timer(xlBackTimer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
+        DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
+    dispatch_source_set_event_handler(xlBackTimer, ^{ XLPerformBackSwipe(quickVerification); });
+    dispatch_resume(xlBackTimer);
+}
+
+static void XLScheduleNextBackSwipe(void) {
+    uint32_t delay = XLBackMinimumDelay +
+        arc4random_uniform(XLBackMaximumDelay - XLBackMinimumDelay + 1);
+    XLScheduleBackSwipeAfterDelay(delay, NO);
+}
+
+static void XLSetRunning(BOOL running) {
+    CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
+        running ? kCFBooleanTrue : kCFBooleanFalse,
+        CFSTR(XLPreferenceDomain));
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+
+    if (xlRunning == running) {
+        XLUpdateUI();
         return;
     }
 
-    NSUInteger generation = xlRunGeneration;
-    XLSetStatus(@"等");
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(XLRecognitionDelay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        XLPerformOneShotRecognition(generation);
-    });
+    xlRunning = running;
+    xlRunGeneration++;
+    if (xlRunning) {
+        XLScheduleSwipeAfterDelay(XLInitialSwipeVerificationDelay);
+        XLScheduleBackSwipeAfterDelay(XLInitialBackVerificationDelay, YES);
+        NSLog(@"[XingLanSwipe] started from Control Center");
+    } else {
+        XLCancelTimer();
+        XLCancelBackTimer();
+        xlActionBusy = NO;
+        xlLastGestureEndTime = 0.0;
+        NSLog(@"[XingLanSwipe] stopped");
+    }
+    XLUpdateUI();
 }
 
 static void XLInstallStatusOverlay(void) {
-    if (xlStatusWindow) return;
+    if (xlStatusWindow) {
+        XLUpdateUI();
+        return;
+    }
 
     CGRect bounds = UIScreen.mainScreen.bounds;
     UIWindowScene *activeScene = nil;
@@ -119,7 +294,6 @@ static void XLInstallStatusOverlay(void) {
     } else {
         window = [[XLStatusOverlayWindow alloc] initWithFrame:bounds];
     }
-
     window.windowLevel = UIWindowLevelAlert + 1000.0;
     window.backgroundColor = UIColor.clearColor;
     window.userInteractionEnabled = NO;
@@ -133,16 +307,17 @@ static void XLInstallStatusOverlay(void) {
     status.translatesAutoresizingMaskIntoConstraints = NO;
     status.userInteractionEnabled = NO;
     status.textAlignment = NSTextAlignmentCenter;
-    status.adjustsFontSizeToFitWidth = YES;
-    status.minimumScaleFactor = 0.60;
-    status.font = [UIFont boldSystemFontOfSize:18.0];
+    status.font = [UIFont boldSystemFontOfSize:20.0];
     status.textColor = UIColor.whiteColor;
-    status.backgroundColor = [UIColor colorWithRed:0.05 green:0.46 blue:0.94 alpha:0.88];
+    status.backgroundColor = [UIColor colorWithRed:0.05 green:0.46 blue:0.94 alpha:0.82];
     status.layer.cornerRadius = 27.0;
     status.layer.borderWidth = 1.5;
-    status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
+    status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.80].CGColor;
+    status.layer.shadowColor = UIColor.blackColor.CGColor;
+    status.layer.shadowOpacity = 0.35;
+    status.layer.shadowRadius = 4.0;
+    status.layer.shadowOffset = CGSizeZero;
     status.clipsToBounds = YES;
-    status.hidden = YES;
     [controller.view addSubview:status];
 
     UILayoutGuide *safeArea = controller.view.safeAreaLayoutGuide;
@@ -152,35 +327,26 @@ static void XLInstallStatusOverlay(void) {
         [status.widthAnchor constraintEqualToConstant:54.0],
         [status.heightAnchor constraintEqualToConstant:54.0],
     ]];
-
     xlStatusWindow = window;
-    xlStatusLabel = status;
+    xlHomeStatusLabel = status;
     window.hidden = NO;
+    XLUpdateUI();
 }
 
 static void XLLockCallback(CFNotificationCenterRef center, void *observer,
                            CFStringRef name, const void *object,
                            CFDictionaryRef userInfo) {
-    (void)center;
-    (void)observer;
-    (void)name;
-    (void)object;
-    (void)userInfo;
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(NO); });
 }
 
 static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *observer,
                                          CFStringRef name, const void *object,
                                          CFDictionaryRef userInfo) {
-    (void)center;
-    (void)observer;
-    (void)name;
-    (void)object;
-    (void)userInfo;
-
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     CFPropertyListRef value = CFPreferencesCopyAppValue(
         CFSTR(XLRunningPreferenceKey), CFSTR(XLPreferenceDomain));
-    BOOL running = value && CFEqual(value, kCFBooleanTrue);
+    BOOL running = (value && CFEqual(value, kCFBooleanTrue));
     if (value) CFRelease(value);
     dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
 }
@@ -188,33 +354,26 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
 __attribute__((constructor))
 static void XingLanSwipeInit(void) {
     @autoreleasepool {
-        if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
-            return;
-        }
-
+        NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
+        if (![bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            xlDetector = [XLBackIconDetector new];
-            xlRecognitionQueue = dispatch_queue_create(
-                "com.jibeib.xinglanswipe.local-template", DISPATCH_QUEUE_SERIAL);
+            xlSender = [XLHIDSender new];
+            xlBackIconDetector = [XLBackIconDetector new];
+            xlImageMatchQueue = dispatch_queue_create(
+                "com.jibeib.xinglanswipe.image-match", DISPATCH_QUEUE_SERIAL);
             XLInstallStatusOverlay();
             XLSetRunning(NO);
-
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
-                NULL,
-                XLLockCallback,
+                NULL, XLLockCallback,
                 CFSTR("com.apple.springboard.lockcomplete"),
-                NULL,
-                CFNotificationSuspensionBehaviorDeliverImmediately);
+                NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
-                NULL,
-                XLControlCenterStateCallback,
+                NULL, XLControlCenterStateCallback,
                 CFSTR(XLControlCenterStateNotification),
-                NULL,
-                CFNotificationSuspensionBehaviorDeliverImmediately);
-
-            NSLog(@"[XingLanSwipe] native one-shot local template test loaded");
+                NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+            NSLog(@"[XingLanSwipe] loaded; add the module in Control Center settings");
         });
     }
 }
