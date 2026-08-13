@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scheme: [rootless, roothide]
+        scheme: [roothide]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
