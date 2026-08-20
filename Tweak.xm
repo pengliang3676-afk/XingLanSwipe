@@ -261,8 +261,7 @@ static void XLBaiduBackRequestCallback(CFNotificationCenterRef center, void *obs
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
-            if (!XLReadRunningPreference() ||
-                UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+            if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
                 NSLog(@"[XingLanSwipe] back UI skipped: Baidu is not active");
                 XLPostBackResult(NO);
                 return;
