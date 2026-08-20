@@ -3,7 +3,7 @@ name: Build XingLan Swipe
 on:
   workflow_dispatch:
   push:
-    branches: [main, native-vision-one-shot-test, codex/ui-accessibility-hid-short-test]
+    branches: [main, native-vision-one-shot-test, codex/ui-accessibility-hid-short-test, codex/ui-accessibility-hid-formal]
     paths:
       - "Tweak.xm"
       - "XingLanSwipeShared.h"

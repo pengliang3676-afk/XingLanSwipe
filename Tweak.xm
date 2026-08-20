@@ -4,10 +4,10 @@
 #import "XLHIDSender.h"
 #import "XingLanSwipeShared.h"
 
-static const uint32_t XLMinimumDelay = 12;
-static const uint32_t XLMaximumDelay = 18;
-static const uint32_t XLBackMinimumDelay = 25;
-static const uint32_t XLBackMaximumDelay = 35;
+static const uint32_t XLMinimumDelay = 180;
+static const uint32_t XLMaximumDelay = 300;
+static const uint32_t XLBackMinimumDelay = 420;
+static const uint32_t XLBackMaximumDelay = 720;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 static const double XLBackTapMinimumX = 0.036;
@@ -82,8 +82,8 @@ static void XLCancelBackTimer(void) {
 static void XLScheduleNext(void);
 static void XLScheduleSwipeAfterDelay(uint32_t delay);
 static void XLScheduleNextBackSwipe(void);
-static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification);
-static void XLPerformBackSwipe(BOOL quickVerification);
+static void XLScheduleBackSwipeAfterDelay(uint32_t delay);
+static void XLPerformBackSwipe(void);
 
 static BOOL XLGestureCooldownIsActive(void) {
     if (xlLastGestureEndTime <= 0.0) return NO;
@@ -153,19 +153,18 @@ static double XLRandomCoordinate(double minimum, double maximum) {
     return minimum + (maximum - minimum) * unit;
 }
 
-static void XLPerformBackSwipe(BOOL quickVerification) {
+static void XLPerformBackSwipe(void) {
     XLCancelBackTimer();
     if (!xlRunning) return;
     if (xlActionBusy || XLGestureCooldownIsActive()) {
         NSLog(@"[XingLanSwipe] back check deferred to avoid action conflict");
-        XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay, quickVerification);
+        XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay);
         return;
     }
     NSString *frontmost = XLFrontmostBundleIdentifier();
     if (![frontmost isEqualToString:@"com.baidu.BaiduMobileInfo"]) {
         NSLog(@"[XingLanSwipe] fixed back tap skipped; foreground=%@",
               frontmost ?: @"unknown");
-        if (quickVerification) XLShowStatusText(@"非百", 4.0);
         XLScheduleNextBackSwipe();
         return;
     }
@@ -210,25 +209,24 @@ static void XLScheduleNext(void) {
     XLScheduleSwipeAfterDelay(delay);
 }
 
-static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification) {
+static void XLScheduleBackSwipeAfterDelay(uint32_t delay) {
     XLCancelBackTimer();
     if (!xlRunning) return;
     xlNextBackCheckTime = CFAbsoluteTimeGetCurrent() + delay;
-    NSLog(@"[XingLanSwipe] %@ system back check in %u seconds",
-          quickVerification ? @"initial verification" : @"next", delay);
+    NSLog(@"[XingLanSwipe] next system back check in %u seconds", delay);
     xlBackTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
         dispatch_get_main_queue());
     dispatch_source_set_timer(xlBackTimer,
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
         DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
-    dispatch_source_set_event_handler(xlBackTimer, ^{ XLPerformBackSwipe(quickVerification); });
+    dispatch_source_set_event_handler(xlBackTimer, ^{ XLPerformBackSwipe(); });
     dispatch_resume(xlBackTimer);
 }
 
 static void XLScheduleNextBackSwipe(void) {
     uint32_t delay = XLBackMinimumDelay +
         arc4random_uniform(XLBackMaximumDelay - XLBackMinimumDelay + 1);
-    XLScheduleBackSwipeAfterDelay(delay, NO);
+    XLScheduleBackSwipeAfterDelay(delay);
 }
 
 static BOOL XLBaiduIsFrontmost(void) {
@@ -246,7 +244,7 @@ static void XLSetRunning(BOOL running) {
     xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
-        XLScheduleBackSwipeAfterDelay(8, YES);
+        XLScheduleNextBackSwipe();
         NSLog(@"[XingLanSwipe] started");
     } else {
         XLCancelTimer();
