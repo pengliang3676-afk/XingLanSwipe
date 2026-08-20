@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏
-Version: 2.4.6
+Version: 2.4.7
 Architecture: iphoneos-arm64
-Description: Dopamine rootless 正式版。上滑 180–300 秒；返回检查 600–900 秒；识别左下角返回箭头后按实际中心安全随机点击，不再右滑。
+Description: Dopamine rootless 正式版。上滑 180–300 秒；返回检查 420–720 秒；用辅助功能确认左下角返回控件后按其中心执行 HID 点击；不再截图。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks

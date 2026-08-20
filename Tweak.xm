@@ -3,7 +3,6 @@
 #import <math.h>
 #import <notify.h>
 #import "XLHIDSender.h"
-#import "XLBackIconDetector.h"
 #import "XingLanSwipeShared.h"
 
 static const uint32_t XLMinimumDelay = 180;
@@ -12,17 +11,16 @@ static const uint32_t XLBackMinimumDelay = 420;
 static const uint32_t XLBackMaximumDelay = 720;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
-static const NSUInteger XLBackRecognitionAttempts = 3;
-static const NSTimeInterval XLBackRecognitionInterval = 1.0;
-static const double XLBackChevronThreshold = 0.65;
+static const NSTimeInterval XLBackRequestTimeout = 3.0;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
 static XLHIDSender *xlSender;
-static XLBackIconDetector *xlBackIconDetector;
-static dispatch_queue_t xlImageMatchQueue;
 static BOOL xlRunning = NO;
 static BOOL xlActionBusy = NO;
+static BOOL xlBackRequestPending = NO;
+static BOOL xlBackRequestQuickVerification = NO;
+static NSUInteger xlBackRequestSerial = 0;
 static NSUInteger xlRunGeneration = 0;
 static CFAbsoluteTime xlLastGestureEndTime = 0.0;
 static CFAbsoluteTime xlNextBackCheckTime = 0.0;
@@ -81,11 +79,6 @@ static void XLScheduleSwipeAfterDelay(uint32_t delay);
 static void XLScheduleNextBackSwipe(void);
 static void XLScheduleBackSwipeAfterDelay(uint32_t delay, BOOL quickVerification);
 static void XLPerformBackSwipe(BOOL quickVerification);
-static void XLPerformBackRecognitionAttempt(NSUInteger generation,
-                                            BOOL quickVerification,
-                                            NSUInteger attempt,
-                                            NSArray<NSValue *> *detectedCenters,
-                                            double bestScore);
 
 static BOOL XLGestureCooldownIsActive(void) {
     if (xlLastGestureEndTime <= 0.0) return NO;
@@ -117,181 +110,211 @@ static void XLPerformSwipe(void) {
     }];
 }
 
-static CGPoint XLStableCenter(NSArray<NSValue *> *centers) {
-    if (centers.count == 0) return CGPointZero;
-    if (centers.count == 1) return centers.firstObject.CGPointValue;
-    if (centers.count == 2) {
-        CGPoint first = centers[0].CGPointValue;
-        CGPoint second = centers[1].CGPointValue;
-        return CGPointMake((first.x + second.x) * 0.5,
-                           (first.y + second.y) * 0.5);
-    }
-    NSMutableArray<NSNumber *> *xs = [NSMutableArray arrayWithCapacity:centers.count];
-    NSMutableArray<NSNumber *> *ys = [NSMutableArray arrayWithCapacity:centers.count];
-    for (NSValue *value in centers) {
-        CGPoint point = value.CGPointValue;
-        [xs addObject:@(point.x)];
-        [ys addObject:@(point.y)];
-    }
-    [xs sortUsingSelector:@selector(compare:)];
-    [ys sortUsingSelector:@selector(compare:)];
-    NSUInteger middle = centers.count / 2;
-    return CGPointMake(xs[middle].doubleValue, ys[middle].doubleValue);
+static BOOL XLReadRunningPreference(void) {
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+    CFPropertyListRef value = CFPreferencesCopyAppValue(
+        CFSTR(XLRunningPreferenceKey), CFSTR(XLPreferenceDomain));
+    BOOL running = value && CFEqual(value, kCFBooleanTrue);
+    if (value) CFRelease(value);
+    return running;
 }
 
-static NSInteger XLRandomSignedOffset(NSUInteger radius) {
-    return (NSInteger)arc4random_uniform((uint32_t)(radius * 2 + 1)) -
-        (NSInteger)radius;
+static void XLPostBackResult(BOOL tapped) {
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        tapped ? CFSTR(XLBackCheckTappedNotification)
+               : CFSTR(XLBackCheckSkippedNotification),
+        NULL, NULL, YES);
 }
 
-static void XLDispatchBackTap(CGPoint detectedCenter, BOOL quickVerification) {
-    NSUInteger generation = xlRunGeneration;
-    if (!xlSender) xlSender = [XLHIDSender new];
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
-    if (screenSize.width <= 0.0 || screenSize.height <= 0.0 ||
-        detectedCenter.x < 0.03 || detectedCenter.x > 0.12 ||
-        detectedCenter.y < 0.90 || detectedCenter.y > 0.99) {
-        xlActionBusy = NO;
-        NSLog(@"[XingLanSwipe] detected chevron center outside safe region: %.4fx%.4f",
-              detectedCenter.x, detectedCenter.y);
-        if (quickVerification) XLShowStatusText(@"点错", 3.0);
-        if (xlRunning) XLScheduleNextBackSwipe();
-        return;
+static BOOL XLValidAccessibilityFrame(CGRect frame) {
+    return !CGRectIsNull(frame) && !CGRectIsInfinite(frame) &&
+        isfinite(frame.origin.x) && isfinite(frame.origin.y) &&
+        isfinite(frame.size.width) && isfinite(frame.size.height) &&
+        frame.size.width > 0.0 && frame.size.height > 0.0;
+}
+
+static CGRect XLFrameForAccessibilityElement(id element) {
+    CGRect frame = CGRectZero;
+    @try {
+        frame = [element accessibilityFrame];
+    } @catch (__unused NSException *exception) {
+        frame = CGRectZero;
+    }
+    if (!XLValidAccessibilityFrame(frame) && [element isKindOfClass:UIView.class]) {
+        UIView *view = (UIView *)element;
+        frame = [view convertRect:view.bounds toView:nil];
+    }
+    return frame;
+}
+
+static void XLCollectAccessibleButtons(id element,
+                                       NSMutableArray *buttons,
+                                       NSMutableSet<NSValue *> *visited,
+                                       NSUInteger depth) {
+    if (!element || depth > 48 || visited.count >= 2048 || buttons.count > 64) return;
+    NSValue *identity = [NSValue valueWithPointer:(__bridge const void *)element];
+    if ([visited containsObject:identity]) return;
+    [visited addObject:identity];
+
+    if ([element isKindOfClass:UIView.class]) {
+        UIView *view = (UIView *)element;
+        if (view.hidden || view.alpha < 0.01 || !view.userInteractionEnabled) return;
     }
 
-    CGPoint tapPoint = CGPointZero;
-    BOOL validTapPoint = NO;
-    for (NSUInteger attempt = 0; attempt < 16; attempt++) {
-        double x = detectedCenter.x + XLRandomSignedOffset(8) / screenSize.width;
-        double y = detectedCenter.y + XLRandomSignedOffset(6) / screenSize.height;
-        if (x >= 0.02 && x <= 0.14 && y >= 0.90 && y <= 0.99) {
-            tapPoint = CGPointMake(x, y);
-            validTapPoint = YES;
-            break;
+    @try {
+        if ([element isAccessibilityElement]) {
+            if (([element accessibilityTraits] & UIAccessibilityTraitButton) != 0) {
+                [buttons addObject:element];
+            }
+            return;
+        }
+
+        NSInteger count = [element accessibilityElementCount];
+        if (count > 0 && count <= 256) {
+            for (NSInteger index = 0; index < count; index++) {
+                XLCollectAccessibleButtons([element accessibilityElementAtIndex:index],
+                                           buttons, visited, depth + 1);
+            }
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[XingLanSwipe] accessibility container ignored: %@", exception.reason);
+    }
+
+    if ([element isKindOfClass:UIView.class]) {
+        for (UIView *subview in ((UIView *)element).subviews) {
+            XLCollectAccessibleButtons(subview, buttons, visited, depth + 1);
         }
     }
-    if (!validTapPoint) {
-        xlActionBusy = NO;
-        NSLog(@"[XingLanSwipe] could not generate safe randomized tap point");
-        if (quickVerification) XLShowStatusText(@"点错", 3.0);
-        if (xlRunning) XLScheduleNextBackSwipe();
-        return;
-    }
-
-    NSLog(@"[XingLanSwipe] tapping detected chevron center=%.4fx%.4f final=%.4fx%.4f",
-          detectedCenter.x, detectedCenter.y, tapPoint.x, tapPoint.y);
-    [xlSender performTapAtNormalizedX:tapPoint.x y:tapPoint.y completion:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != xlRunGeneration) return;
-            xlActionBusy = NO;
-            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            NSLog(@"[XingLanSwipe] back-chevron tap %@", success ? @"success" : @"failed");
-            if (quickVerification && xlRunning) {
-                XLShowStatusText(success ? @"点✓" : @"点×", 2.0);
-            }
-            if (xlRunning) XLScheduleNextBackSwipe();
-        });
-    }];
 }
 
-static void XLPerformBackRecognitionAttempt(NSUInteger generation,
-                                            BOOL quickVerification,
-                                            NSUInteger attempt,
-                                            NSArray<NSValue *> *detectedCenters,
-                                            double bestScore) {
-    if (!xlRunning || generation != xlRunGeneration) return;
-    NSError *captureError = nil;
-    UIImage *screenshot = [xlBackIconDetector captureScreenWithError:&captureError];
-    if (!screenshot) {
-        xlActionBusy = NO;
-        NSLog(@"[XingLanSwipe] back recognition attempt %lu capture failed; swipe cancelled: %@",
-              (unsigned long)(attempt + 1),
-              captureError.localizedDescription ?: @"screenshot unavailable");
-        if (quickVerification) XLShowStatusText(@"图错", 3.0);
-        XLScheduleNextBackSwipe();
-        return;
+static NSString *XLAccessibilityLabel(id element) {
+    NSString *label = nil;
+    @try {
+        label = [element accessibilityLabel];
+    } @catch (__unused NSException *exception) {
+        label = nil;
+    }
+    if (![label isKindOfClass:NSString.class]) return @"";
+    return [label stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+}
+
+static NSArray *XLForegroundAccessibilityButtons(void) {
+    UIApplication *application = UIApplication.sharedApplication;
+    if (application.applicationState != UIApplicationStateActive) return @[];
+
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in application.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class] ||
+                scene.activationState != UISceneActivationStateForegroundActive) continue;
+            [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
+        }
+    }
+    if (windows.count == 0) [windows addObjectsFromArray:application.windows];
+
+    NSMutableArray *buttons = [NSMutableArray array];
+    NSMutableSet<NSValue *> *visited = [NSMutableSet set];
+    for (UIWindow *window in windows) {
+        if (window.hidden || window.alpha < 0.01) continue;
+        XLCollectAccessibleButtons(window, buttons, visited, 0);
+    }
+    return buttons;
+}
+
+static id XLUniqueBottomLeftBlankButton(void) {
+    CGRect screenBounds = UIScreen.mainScreen.bounds;
+    CGSize screenSize = screenBounds.size;
+    if (screenSize.width <= 0.0 || screenSize.height <= 0.0 ||
+        screenSize.height <= screenSize.width) return nil;
+
+    NSMutableArray *regionalButtons = [NSMutableArray array];
+    for (id button in XLForegroundAccessibilityButtons()) {
+        CGRect frame = XLFrameForAccessibilityElement(button);
+        if (!XLValidAccessibilityFrame(frame) || frame.size.width < 8.0 ||
+            frame.size.height < 8.0 || frame.size.width > screenSize.width * 0.30 ||
+            frame.size.height > screenSize.height * 0.20) continue;
+        CGPoint center = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+        double x = center.x / screenSize.width;
+        double y = center.y / screenSize.height;
+        if (x >= 0.02 && x <= 0.14 && y >= 0.90 && y <= 0.99) {
+            [regionalButtons addObject:button];
+        }
     }
 
-    dispatch_async(xlImageMatchQueue, ^{
-        @autoreleasepool {
-            NSError *matchError = nil;
-            CGPoint matchedCenter = CGPointZero;
-            double matchScore = [xlBackIconDetector matchScoreForScreenshot:screenshot
-                                                           normalizedCenter:&matchedCenter
-                                                                       error:&matchError];
-            BOOL chevronFound = !matchError && matchScore >= XLBackChevronThreshold;
-            NSInteger matchPercent = MAX(0, MIN(99,
-                (NSInteger)lround(matchScore * 100.0)));
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!xlRunning || generation != xlRunGeneration) return;
-                if (matchError) {
-                    xlActionBusy = NO;
-                    NSLog(@"[XingLanSwipe] back recognition attempt %lu failed; swipe cancelled: %@",
-                          (unsigned long)(attempt + 1),
-                          matchError.localizedDescription);
-                    if (quickVerification) XLShowStatusText(@"模错", 3.0);
-                    XLScheduleNextBackSwipe();
-                    return;
-                }
-                double nextBestScore = MAX(bestScore, matchScore);
-                NSMutableArray<NSValue *> *nextCenters =
-                    [detectedCenters mutableCopy] ?: [NSMutableArray array];
-                if (chevronFound) {
-                    [nextCenters addObject:[NSValue valueWithCGPoint:matchedCenter]];
-                }
-                NSUInteger nextDetectedCount = nextCenters.count;
-                NSUInteger nextAttempt = attempt + 1;
-                NSLog(@"[XingLanSwipe] back chevron %@ on attempt %lu/%lu score=%.4f detected=%lu",
-                      chevronFound ? @"present" : @"absent",
-                      (unsigned long)nextAttempt,
-                      (unsigned long)XLBackRecognitionAttempts,
-                      matchScore,
-                      (unsigned long)nextDetectedCount);
-                if (nextAttempt < XLBackRecognitionAttempts) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                                 (int64_t)(XLBackRecognitionInterval * NSEC_PER_SEC)),
-                                   dispatch_get_main_queue(), ^{
-                        XLPerformBackRecognitionAttempt(generation,
-                                                        quickVerification,
-                                                        nextAttempt,
-                                                        [nextCenters copy],
-                                                        nextBestScore);
-                    });
-                    return;
-                }
+    if (regionalButtons.count != 1) {
+        NSLog(@"[XingLanSwipe] back UI skipped: %lu bottom-left buttons",
+              (unsigned long)regionalButtons.count);
+        return nil;
+    }
+    id button = regionalButtons.firstObject;
+    NSString *label = XLAccessibilityLabel(button);
+    if (label.length != 0) {
+        NSLog(@"[XingLanSwipe] back UI skipped: bottom-left label=%@", label);
+        return nil;
+    }
+    return button;
+}
 
-                BOOL shouldReturn = nextDetectedCount >= 2;
-                NSLog(@"[XingLanSwipe] back chevron final detected=%lu/%lu best=%.4f; %@",
-                      (unsigned long)nextDetectedCount,
-                      (unsigned long)XLBackRecognitionAttempts,
-                      nextBestScore,
-                      shouldReturn ? @"returning" : @"swipe cancelled");
-                if (!shouldReturn) {
-                    xlActionBusy = NO;
-                    if (quickVerification) {
-                        XLShowStatusText([NSString stringWithFormat:@"无%ld",
-                                          (long)matchPercent], 3.0);
-                    }
-                    XLScheduleNextBackSwipe();
+static void XLBaiduBackRequestCallback(CFNotificationCenterRef center, void *observer,
+                                       CFStringRef name, const void *object,
+                                       CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @autoreleasepool {
+            if (!XLReadRunningPreference() ||
+                UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+                NSLog(@"[XingLanSwipe] back UI skipped: Baidu is not active");
+                XLPostBackResult(NO);
+                return;
+            }
+            @try {
+                id button = XLUniqueBottomLeftBlankButton();
+                if (!button) {
+                    XLPostBackResult(NO);
                     return;
                 }
-                CGPoint stableCenter = XLStableCenter(nextCenters);
-                if (quickVerification) {
-                    XLShowStatusText([NSString stringWithFormat:@"点%lu",
-                                      (unsigned long)nextDetectedCount], 0.8);
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                                 (int64_t)(0.8 * NSEC_PER_SEC)),
-                                   dispatch_get_main_queue(), ^{
-                        if (xlRunning && generation == xlRunGeneration) {
-                            XLDispatchBackTap(stableCenter, YES);
-                        }
-                    });
-                } else {
-                    XLDispatchBackTap(stableCenter, NO);
-                }
-            });
+                CGRect frame = XLFrameForAccessibilityElement(button);
+                CGSize screenSize = UIScreen.mainScreen.bounds.size;
+                CGPoint tapPoint = CGPointMake(CGRectGetMidX(frame) / screenSize.width,
+                                               CGRectGetMidY(frame) / screenSize.height);
+                if (!xlSender) xlSender = [XLHIDSender new];
+                NSLog(@"[XingLanSwipe] back UI confirmed; HID tap at %.4fx%.4f",
+                      tapPoint.x, tapPoint.y);
+                [xlSender performTapAtNormalizedX:tapPoint.x y:tapPoint.y
+                                       completion:^(BOOL success) {
+                    NSLog(@"[XingLanSwipe] accessibility-guided HID tap %@",
+                          success ? @"success" : @"failed");
+                    XLPostBackResult(success);
+                }];
+            } @catch (NSException *exception) {
+                NSLog(@"[XingLanSwipe] back UI exception; skipped: %@", exception.reason);
+                XLPostBackResult(NO);
+            }
         }
     });
+}
+
+static void XLFinishBackRequest(BOOL tapped) {
+    if (!xlBackRequestPending) return;
+    xlBackRequestPending = NO;
+    xlActionBusy = NO;
+    if (tapped) xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+    NSLog(@"[XingLanSwipe] accessibility-guided back check %@",
+          tapped ? @"tapped" : @"skipped");
+    if (xlBackRequestQuickVerification && xlRunning) {
+        XLShowStatusText(tapped ? @"点✓" : @"无", 2.0);
+    }
+    if (xlRunning) XLScheduleNextBackSwipe();
+}
+
+static void XLBackResultCallback(CFNotificationCenterRef center, void *observer,
+                                 CFStringRef name, const void *object,
+                                 CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)object; (void)userInfo;
+    BOOL tapped = CFEqual(name, CFSTR(XLBackCheckTappedNotification));
+    dispatch_async(dispatch_get_main_queue(), ^{ XLFinishBackRequest(tapped); });
 }
 
 static void XLPerformBackSwipe(BOOL quickVerification) {
@@ -303,8 +326,21 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
         return;
     }
     xlActionBusy = YES;
-    if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
-    XLPerformBackRecognitionAttempt(xlRunGeneration, quickVerification, 0, @[], 0.0);
+    xlBackRequestPending = YES;
+    xlBackRequestQuickVerification = quickVerification;
+    NSUInteger requestSerial = ++xlBackRequestSerial;
+    NSLog(@"[XingLanSwipe] requesting foreground Baidu accessibility check");
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR(XLBackCheckRequestNotification), NULL, NULL, YES);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(XLBackRequestTimeout * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (xlBackRequestPending && requestSerial == xlBackRequestSerial) {
+            NSLog(@"[XingLanSwipe] back UI request timed out; skipped");
+            XLFinishBackRequest(NO);
+        }
+    });
 }
 
 static void XLScheduleSwipeAfterDelay(uint32_t delay) {
@@ -367,6 +403,8 @@ static void XLSetRunning(BOOL running) {
     } else {
         XLCancelTimer();
         XLCancelBackTimer();
+        xlBackRequestPending = NO;
+        xlBackRequestSerial++;
         xlActionBusy = NO;
         xlLastGestureEndTime = 0.0;
         NSLog(@"[XingLanSwipe] stopped");
@@ -451,10 +489,7 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
                                          CFStringRef name, const void *object,
                                          CFDictionaryRef userInfo) {
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
-    CFPropertyListRef value = CFPreferencesCopyAppValue(
-        CFSTR(XLRunningPreferenceKey), CFSTR(XLPreferenceDomain));
-    BOOL running = (value && CFEqual(value, kCFBooleanTrue));
-    if (value) CFRelease(value);
+    BOOL running = XLReadRunningPreference();
     dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
 }
 
@@ -462,25 +497,40 @@ __attribute__((constructor))
 static void XingLanSwipeInit(void) {
     @autoreleasepool {
         NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
-        if (![bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            xlSender = [XLHIDSender new];
-            xlBackIconDetector = [XLBackIconDetector new];
-            xlImageMatchQueue = dispatch_queue_create(
-                "com.jibeib.xinglanswipe.image-match", DISPATCH_QUEUE_SERIAL);
-            XLInstallStatusOverlay();
-            XLSetRunning(NO);
+        if ([bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                xlSender = [XLHIDSender new];
+                XLInstallStatusOverlay();
+                XLSetRunning(NO);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    NULL, XLLockCallback,
+                    CFSTR("com.apple.springboard.lockcomplete"),
+                    NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    NULL, XLControlCenterStateCallback,
+                    CFSTR(XLControlCenterStateNotification),
+                    NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckTappedNotification),
+                    NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckSkippedNotification),
+                    NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+                NSLog(@"[XingLanSwipe] loaded; add the module in Control Center settings");
+            });
+        } else if ([bundleIdentifier isEqualToString:@"com.baidu.BaiduMobileInfo"]) {
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDarwinNotifyCenter(),
-                NULL, XLLockCallback,
-                CFSTR("com.apple.springboard.lockcomplete"),
+                NULL, XLBaiduBackRequestCallback,
+                CFSTR(XLBackCheckRequestNotification),
                 NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-            CFNotificationCenterAddObserver(
-                CFNotificationCenterGetDarwinNotifyCenter(),
-                NULL, XLControlCenterStateCallback,
-                CFSTR(XLControlCenterStateNotification),
-                NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-            NSLog(@"[XingLanSwipe] loaded; add the module in Control Center settings");
-        });
+            NSLog(@"[XingLanSwipe] Baidu accessibility-guided HID helper loaded");
+        }
     }
 }
