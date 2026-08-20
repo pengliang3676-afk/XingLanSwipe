@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜脚本短测版
-Version: 2.4.8-test7
+Version: 2.4.8-test8
 Architecture: iphoneos-arm64e
-Description: RootHide 自动跟随短测版 test7。仅注入 SpringBoard；百度进入前台 1 秒后自动开启，离开立即停止；启动后 8 秒首次检查；上滑 12–18 秒；左下角约 42x53 像素随机点击。
+Description: RootHide 总开关自动跟随短测版 test8。控制中心关闭时彻底停止并隐藏；开启后仅在百度前台运行，离开暂停；启动后 8 秒首次检查；上滑 12–18 秒；左下角约 42x53 像素随机点击。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks

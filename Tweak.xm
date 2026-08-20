@@ -18,6 +18,7 @@ static const double XLBackTapMaximumY = 0.982;
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
 static XLHIDSender *xlSender;
+static BOOL xlControlEnabled = NO;
 static BOOL xlRunning = NO;
 static BOOL xlActionBusy = NO;
 static NSUInteger xlRunGeneration = 0;
@@ -40,6 +41,10 @@ static UILabel *xlHomeStatusLabel;
 static void XLUpdateUI(void) {
     UILabel *status = xlHomeStatusLabel;
     if (status) {
+        if (!xlControlEnabled) {
+            status.hidden = YES;
+            return;
+        }
         status.hidden = NO;
         status.text = xlRunning ? @"开" : @"关";
     }
@@ -232,11 +237,6 @@ static BOOL XLBaiduIsFrontmost(void) {
 }
 
 static void XLSetRunning(BOOL running) {
-    CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
-        running ? kCFBooleanTrue : kCFBooleanFalse,
-        CFSTR(XLPreferenceDomain));
-    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
-
     if (xlRunning == running) {
         XLUpdateUI();
         return;
@@ -260,6 +260,10 @@ static void XLSetRunning(BOOL running) {
 
 static void XLReconcileAutomaticRunningState(void) {
     NSUInteger serial = ++xlForegroundCheckSerial;
+    if (!xlControlEnabled) {
+        XLSetRunning(NO);
+        return;
+    }
     if (!XLBaiduIsFrontmost()) {
         XLSetRunning(NO);
         return;
@@ -269,7 +273,7 @@ static void XLReconcileAutomaticRunningState(void) {
                                  (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (serial != xlForegroundCheckSerial) return;
-        XLSetRunning(XLBaiduIsFrontmost());
+        XLSetRunning(xlControlEnabled && XLBaiduIsFrontmost());
     });
 }
 
@@ -355,6 +359,7 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     BOOL requestedRunning = XLReadRunningPreference();
     dispatch_async(dispatch_get_main_queue(), ^{
+        xlControlEnabled = requestedRunning;
         if (!requestedRunning) {
             xlForegroundCheckSerial++;
             XLSetRunning(NO);
@@ -383,6 +388,7 @@ static void XingLanSwipeInit(void) {
         if ([bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlSender = [XLHIDSender new];
+                xlControlEnabled = XLReadRunningPreference();
                 XLInstallStatusOverlay();
                 XLSetRunning(NO);
                 XLReconcileAutomaticRunningState();
