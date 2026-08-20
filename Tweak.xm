@@ -5,10 +5,10 @@
 #import "XLHIDSender.h"
 #import "XingLanSwipeShared.h"
 
-static const uint32_t XLMinimumDelay = 180;
-static const uint32_t XLMaximumDelay = 300;
-static const uint32_t XLBackMinimumDelay = 420;
-static const uint32_t XLBackMaximumDelay = 720;
+static const uint32_t XLMinimumDelay = 12;
+static const uint32_t XLMaximumDelay = 18;
+static const uint32_t XLBackMinimumDelay = 25;
+static const uint32_t XLBackMaximumDelay = 35;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 static const NSTimeInterval XLBackRequestTimeout = 3.0;
