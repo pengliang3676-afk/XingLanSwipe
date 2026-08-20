@@ -212,8 +212,6 @@ static NSArray *XLForegroundAccessibilityButtons(void) {
             [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
         }
     }
-    if (windows.count == 0) [windows addObjectsFromArray:application.windows];
-
     NSMutableArray *buttons = [NSMutableArray array];
     NSMutableSet<NSValue *> *visited = [NSMutableSet set];
     for (UIWindow *window in windows) {
