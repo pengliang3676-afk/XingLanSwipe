@@ -10,8 +10,10 @@ static const uint32_t XLBackMinimumDelay = 25;
 static const uint32_t XLBackMaximumDelay = 35;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
-static const double XLFixedBackTapX = 0.064;
-static const double XLFixedBackTapY = 0.962;
+static const double XLBackTapMinimumX = 0.044;
+static const double XLBackTapMaximumX = 0.084;
+static const double XLBackTapMinimumY = 0.948;
+static const double XLBackTapMaximumY = 0.976;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
@@ -140,6 +142,11 @@ static NSString *XLFrontmostBundleIdentifier(void) {
     }
 }
 
+static double XLRandomCoordinate(double minimum, double maximum) {
+    double unit = (double)arc4random_uniform(1000001) / 1000000.0;
+    return minimum + (maximum - minimum) * unit;
+}
+
 static void XLPerformBackSwipe(BOOL quickVerification) {
     XLCancelBackTimer();
     if (!xlRunning) return;
@@ -159,17 +166,19 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
 
     xlActionBusy = YES;
     NSUInteger generation = xlRunGeneration;
+    double tapX = XLRandomCoordinate(XLBackTapMinimumX, XLBackTapMaximumX);
+    double tapY = XLRandomCoordinate(XLBackTapMinimumY, XLBackTapMaximumY);
     if (!xlSender) xlSender = [XLHIDSender new];
-    NSLog(@"[XingLanSwipe] Baidu foreground; fixed HID tap at %.4fx%.4f",
-          XLFixedBackTapX, XLFixedBackTapY);
-    [xlSender performTapAtNormalizedX:XLFixedBackTapX y:XLFixedBackTapY
+    NSLog(@"[XingLanSwipe] Baidu foreground; randomized HID tap at %.4fx%.4f",
+          tapX, tapY);
+    [xlSender performTapAtNormalizedX:tapX y:tapY
                            completion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != xlRunGeneration) return;
             xlActionBusy = NO;
             if (success) xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
             XLShowStatusText(success ? @"点✓" : @"点×", 4.0);
-            NSLog(@"[XingLanSwipe] fixed Baidu back tap %@",
+            NSLog(@"[XingLanSwipe] randomized Baidu back tap %@",
                   success ? @"success" : @"failed");
             if (xlRunning) XLScheduleNextBackSwipe();
         });
