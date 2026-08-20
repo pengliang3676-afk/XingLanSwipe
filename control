@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏短测版
-Version: 2.4.8-test3
+Version: 2.4.8-test4
 Architecture: iphoneos-arm64
-Description: Dopamine rootless USB 自诊断短测版 test3。启动后 8 秒首次检查；上滑 12–18 秒；返回检查 25–35 秒；浮层显示控件识别和 HID 点击结果。
+Description: Dopamine rootless 黑名单兼容短测版 test4。仅注入 SpringBoard；启动后 8 秒首次检查；上滑 12–18 秒；确认百度在前台后固定点击左下角。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
