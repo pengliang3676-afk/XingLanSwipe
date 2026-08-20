@@ -21,6 +21,7 @@ static XLHIDSender *xlSender;
 static BOOL xlRunning = NO;
 static BOOL xlActionBusy = NO;
 static NSUInteger xlRunGeneration = 0;
+static NSUInteger xlForegroundCheckSerial = 0;
 static CFAbsoluteTime xlLastGestureEndTime = 0.0;
 static CFAbsoluteTime xlNextBackCheckTime = 0.0;
 static UIWindow *xlStatusWindow;
@@ -39,8 +40,8 @@ static UILabel *xlHomeStatusLabel;
 static void XLUpdateUI(void) {
     UILabel *status = xlHomeStatusLabel;
     if (status) {
-        status.hidden = !xlRunning;
-        status.text = @"开";
+        status.hidden = NO;
+        status.text = xlRunning ? @"开" : @"关";
     }
 }
 
@@ -225,6 +226,11 @@ static void XLScheduleNextBackSwipe(void) {
     XLScheduleBackSwipeAfterDelay(delay, NO);
 }
 
+static BOOL XLBaiduIsFrontmost(void) {
+    return [XLFrontmostBundleIdentifier()
+        isEqualToString:@"com.baidu.BaiduMobileInfo"];
+}
+
 static void XLSetRunning(BOOL running) {
     CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
         running ? kCFBooleanTrue : kCFBooleanFalse,
@@ -241,7 +247,7 @@ static void XLSetRunning(BOOL running) {
     if (xlRunning) {
         XLScheduleNext();
         XLScheduleBackSwipeAfterDelay(8, YES);
-        NSLog(@"[XingLanSwipe] started from Control Center");
+        NSLog(@"[XingLanSwipe] started");
     } else {
         XLCancelTimer();
         XLCancelBackTimer();
@@ -250,6 +256,21 @@ static void XLSetRunning(BOOL running) {
         NSLog(@"[XingLanSwipe] stopped");
     }
     XLUpdateUI();
+}
+
+static void XLReconcileAutomaticRunningState(void) {
+    NSUInteger serial = ++xlForegroundCheckSerial;
+    if (!XLBaiduIsFrontmost()) {
+        XLSetRunning(NO);
+        return;
+    }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (serial != xlForegroundCheckSerial) return;
+        XLSetRunning(XLBaiduIsFrontmost());
+    });
 }
 
 static void XLInstallStatusOverlay(void) {
@@ -322,16 +343,38 @@ static void XLLockCallback(CFNotificationCenterRef center, void *observer,
                            CFStringRef name, const void *object,
                            CFDictionaryRef userInfo) {
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
-    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(NO); });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        xlForegroundCheckSerial++;
+        XLSetRunning(NO);
+    });
 }
 
 static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *observer,
                                          CFStringRef name, const void *object,
                                          CFDictionaryRef userInfo) {
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
-    BOOL running = XLReadRunningPreference();
-    dispatch_async(dispatch_get_main_queue(), ^{ XLSetRunning(running); });
+    BOOL requestedRunning = XLReadRunningPreference();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!requestedRunning) {
+            xlForegroundCheckSerial++;
+            XLSetRunning(NO);
+        } else {
+            XLReconcileAutomaticRunningState();
+        }
+    });
 }
+
+%hook SpringBoard
+
+- (void)frontDisplayDidChange:(id)display {
+    %orig;
+    (void)display;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        XLReconcileAutomaticRunningState();
+    });
+}
+
+%end
 
 __attribute__((constructor))
 static void XingLanSwipeInit(void) {
@@ -342,6 +385,7 @@ static void XingLanSwipeInit(void) {
                 xlSender = [XLHIDSender new];
                 XLInstallStatusOverlay();
                 XLSetRunning(NO);
+                XLReconcileAutomaticRunningState();
                 CFNotificationCenterAddObserver(
                     CFNotificationCenterGetDarwinNotifyCenter(),
                     NULL, XLLockCallback,
