@@ -119,12 +119,10 @@ static BOOL XLReadRunningPreference(void) {
     return running;
 }
 
-static void XLPostBackResult(BOOL tapped) {
+static void XLPostBackResult(CFStringRef notification) {
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
-        tapped ? CFSTR(XLBackCheckTappedNotification)
-               : CFSTR(XLBackCheckSkippedNotification),
-        NULL, NULL, YES);
+        notification, NULL, NULL, YES);
 }
 
 static BOOL XLValidAccessibilityFrame(CGRect frame) {
@@ -221,7 +219,8 @@ static NSArray *XLForegroundAccessibilityButtons(void) {
     return buttons;
 }
 
-static id XLUniqueBottomLeftBlankButton(void) {
+static id XLUniqueBottomLeftBlankButton(CFStringRef *failureNotification) {
+    if (failureNotification) *failureNotification = CFSTR(XLBackCheckNoButtonNotification);
     CGRect screenBounds = UIScreen.mainScreen.bounds;
     CGSize screenSize = screenBounds.size;
     if (screenSize.width <= 0.0 || screenSize.height <= 0.0 ||
@@ -244,12 +243,18 @@ static id XLUniqueBottomLeftBlankButton(void) {
     if (regionalButtons.count != 1) {
         NSLog(@"[XingLanSwipe] back UI skipped: %lu bottom-left buttons",
               (unsigned long)regionalButtons.count);
+        if (failureNotification && regionalButtons.count > 1) {
+            *failureNotification = CFSTR(XLBackCheckMultipleNotification);
+        }
         return nil;
     }
     id button = regionalButtons.firstObject;
     NSString *label = XLAccessibilityLabel(button);
     if (label.length != 0) {
         NSLog(@"[XingLanSwipe] back UI skipped: bottom-left label=%@", label);
+        if (failureNotification) {
+            *failureNotification = CFSTR(XLBackCheckLabeledNotification);
+        }
         return nil;
     }
     return button;
@@ -263,13 +268,14 @@ static void XLBaiduBackRequestCallback(CFNotificationCenterRef center, void *obs
         @autoreleasepool {
             if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
                 NSLog(@"[XingLanSwipe] back UI skipped: Baidu is not active");
-                XLPostBackResult(NO);
+                XLPostBackResult(CFSTR(XLBackCheckInactiveNotification));
                 return;
             }
             @try {
-                id button = XLUniqueBottomLeftBlankButton();
+                CFStringRef failureNotification = CFSTR(XLBackCheckNoButtonNotification);
+                id button = XLUniqueBottomLeftBlankButton(&failureNotification);
                 if (!button) {
-                    XLPostBackResult(NO);
+                    XLPostBackResult(failureNotification);
                     return;
                 }
                 CGRect frame = XLFrameForAccessibilityElement(button);
@@ -283,25 +289,26 @@ static void XLBaiduBackRequestCallback(CFNotificationCenterRef center, void *obs
                                        completion:^(BOOL success) {
                     NSLog(@"[XingLanSwipe] accessibility-guided HID tap %@",
                           success ? @"success" : @"failed");
-                    XLPostBackResult(success);
+                    XLPostBackResult(success ? CFSTR(XLBackCheckTappedNotification)
+                                             : CFSTR(XLBackCheckTapFailedNotification));
                 }];
             } @catch (NSException *exception) {
                 NSLog(@"[XingLanSwipe] back UI exception; skipped: %@", exception.reason);
-                XLPostBackResult(NO);
+                XLPostBackResult(CFSTR(XLBackCheckExceptionNotification));
             }
         }
     });
 }
 
-static void XLFinishBackRequest(BOOL tapped) {
+static void XLFinishBackRequest(BOOL tapped, NSString *statusText) {
     if (!xlBackRequestPending) return;
     xlBackRequestPending = NO;
     xlActionBusy = NO;
     if (tapped) xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
     NSLog(@"[XingLanSwipe] accessibility-guided back check %@",
           tapped ? @"tapped" : @"skipped");
-    if (xlBackRequestQuickVerification && xlRunning) {
-        XLShowStatusText(tapped ? @"点✓" : @"无", 2.0);
+    if (xlRunning && statusText.length > 0) {
+        XLShowStatusText(statusText, 4.0);
     }
     if (xlRunning) XLScheduleNextBackSwipe();
 }
@@ -311,7 +318,15 @@ static void XLBackResultCallback(CFNotificationCenterRef center, void *observer,
                                  CFDictionaryRef userInfo) {
     (void)center; (void)observer; (void)object; (void)userInfo;
     BOOL tapped = CFEqual(name, CFSTR(XLBackCheckTappedNotification));
-    dispatch_async(dispatch_get_main_queue(), ^{ XLFinishBackRequest(tapped); });
+    NSString *statusText = @"无";
+    if (tapped) statusText = @"点✓";
+    else if (CFEqual(name, CFSTR(XLBackCheckInactiveNotification))) statusText = @"非前";
+    else if (CFEqual(name, CFSTR(XLBackCheckNoButtonNotification))) statusText = @"控0";
+    else if (CFEqual(name, CFSTR(XLBackCheckMultipleNotification))) statusText = @"控多";
+    else if (CFEqual(name, CFSTR(XLBackCheckLabeledNotification))) statusText = @"有字";
+    else if (CFEqual(name, CFSTR(XLBackCheckTapFailedNotification))) statusText = @"点×";
+    else if (CFEqual(name, CFSTR(XLBackCheckExceptionNotification))) statusText = @"异常";
+    dispatch_async(dispatch_get_main_queue(), ^{ XLFinishBackRequest(tapped, statusText); });
 }
 
 static void XLPerformBackSwipe(BOOL quickVerification) {
@@ -335,7 +350,7 @@ static void XLPerformBackSwipe(BOOL quickVerification) {
                    dispatch_get_main_queue(), ^{
         if (xlBackRequestPending && requestSerial == xlBackRequestSerial) {
             NSLog(@"[XingLanSwipe] back UI request timed out; skipped");
-            XLFinishBackRequest(NO);
+            XLFinishBackRequest(NO, @"超时");
         }
     });
 }
@@ -395,7 +410,7 @@ static void XLSetRunning(BOOL running) {
     xlRunGeneration++;
     if (xlRunning) {
         XLScheduleNext();
-        XLScheduleNextBackSwipe();
+        XLScheduleBackSwipeAfterDelay(8, YES);
         NSLog(@"[XingLanSwipe] started from Control Center");
     } else {
         XLCancelTimer();
@@ -519,6 +534,30 @@ static void XingLanSwipeInit(void) {
                     NULL, XLBackResultCallback,
                     CFSTR(XLBackCheckSkippedNotification),
                     NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(), NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckInactiveNotification), NULL,
+                    CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(), NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckNoButtonNotification), NULL,
+                    CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(), NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckMultipleNotification), NULL,
+                    CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(), NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckLabeledNotification), NULL,
+                    CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(), NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckTapFailedNotification), NULL,
+                    CFNotificationSuspensionBehaviorDeliverImmediately);
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDarwinNotifyCenter(), NULL, XLBackResultCallback,
+                    CFSTR(XLBackCheckExceptionNotification), NULL,
+                    CFNotificationSuspensionBehaviorDeliverImmediately);
                 NSLog(@"[XingLanSwipe] loaded; add the module in Control Center settings");
             });
         } else if ([bundleIdentifier isEqualToString:@"com.baidu.BaiduMobileInfo"]) {
