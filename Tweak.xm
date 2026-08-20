@@ -10,10 +10,10 @@ static const uint32_t XLBackMinimumDelay = 25;
 static const uint32_t XLBackMaximumDelay = 35;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
-static const double XLBackTapMinimumX = 0.044;
-static const double XLBackTapMaximumX = 0.084;
-static const double XLBackTapMinimumY = 0.948;
-static const double XLBackTapMaximumY = 0.976;
+static const double XLBackTapMinimumX = 0.036;
+static const double XLBackTapMaximumX = 0.092;
+static const double XLBackTapMinimumY = 0.942;
+static const double XLBackTapMaximumY = 0.982;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
