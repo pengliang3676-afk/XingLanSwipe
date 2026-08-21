@@ -26,6 +26,19 @@ typedef XLAXError (*XLAXCopyElementAtPositionWithParamsFunc)(XLAXUIElementRef ap
                                                              int flags,
                                                              float x,
                                                              float y);
+typedef XLAXError (*XLAXCopyApplicationAndContextAtPositionFunc)(
+    XLAXUIElementRef application,
+    XLAXUIElementRef *element,
+    uint32_t *contextId,
+    float x,
+    float y);
+typedef XLAXError (*XLAXCopyElementUsingContextIdAtPositionFunc)(
+    XLAXUIElementRef application,
+    uint32_t contextId,
+    XLAXUIElementRef *element,
+    int options,
+    float x,
+    float y);
 typedef XLAXError (*XLAXSetMessagingTimeoutFunc)(XLAXUIElementRef element, float timeout);
 typedef XLAXError (*XLAXGetPidFunc)(XLAXUIElementRef element, pid_t *pid);
 typedef void (*XLAXAddAssociatedPidFunc)(pid_t pid, pid_t associatedPid, int displayType);
@@ -40,6 +53,8 @@ typedef struct {
     XLAXCopyAttributeValueFunc copyAttributeValue;
     XLAXCopyElementAtPositionFunc copyElementAtPosition;
     XLAXCopyElementAtPositionWithParamsFunc copyElementAtPositionWithParams;
+    XLAXCopyApplicationAndContextAtPositionFunc copyApplicationAndContextAtPosition;
+    XLAXCopyElementUsingContextIdAtPositionFunc copyElementUsingContextIdAtPosition;
     XLAXSetMessagingTimeoutFunc setMessagingTimeout;
     XLAXGetPidFunc getPid;
     XLAXAddAssociatedPidFunc addAssociatedPid;
@@ -68,9 +83,18 @@ static BOOL XLAXBindRuntimeFromHandle(void *handle) {
     XLAXCopyElementAtPositionWithParamsFunc copyElementAtPositionWithParams =
         (XLAXCopyElementAtPositionWithParamsFunc)dlsym(
             handle, "AXUIElementCopyElementAtPositionWithParams");
+    XLAXCopyApplicationAndContextAtPositionFunc copyApplicationAndContextAtPosition =
+        (XLAXCopyApplicationAndContextAtPositionFunc)dlsym(
+            handle, "AXUIElementCopyApplicationAndContextAtPosition");
+    XLAXCopyElementUsingContextIdAtPositionFunc copyElementUsingContextIdAtPosition =
+        (XLAXCopyElementUsingContextIdAtPositionFunc)dlsym(
+            handle, "AXUIElementCopyElementUsingContextIdAtPosition");
 
     BOOL hasSeed = createApplication || createSystemWide;
-    BOOL hasHitTest = copyElementAtPosition || copyElementAtPositionWithParams;
+    BOOL hasContextHitTest = copyApplicationAndContextAtPosition &&
+        copyElementUsingContextIdAtPosition;
+    BOOL hasHitTest = copyElementAtPosition || copyElementAtPositionWithParams ||
+        hasContextHitTest;
     if (!hasSeed || !hasHitTest || !copyAttributeValue) return NO;
 
     xlAXRuntime.createApplication = createApplication;
@@ -78,6 +102,10 @@ static BOOL XLAXBindRuntimeFromHandle(void *handle) {
     xlAXRuntime.copyAttributeValue = copyAttributeValue;
     xlAXRuntime.copyElementAtPosition = copyElementAtPosition;
     xlAXRuntime.copyElementAtPositionWithParams = copyElementAtPositionWithParams;
+    xlAXRuntime.copyApplicationAndContextAtPosition =
+        copyApplicationAndContextAtPosition;
+    xlAXRuntime.copyElementUsingContextIdAtPosition =
+        copyElementUsingContextIdAtPosition;
     xlAXRuntime.setMessagingTimeout =
         (XLAXSetMessagingTimeoutFunc)dlsym(handle, "AXUIElementSetMessagingTimeout");
     xlAXRuntime.getPid = (XLAXGetPidFunc)dlsym(handle, "AXUIElementGetPid");
@@ -201,6 +229,90 @@ static XLAXUIElementRef XLAXCreateSeed(pid_t expectedPid) {
     return seed;
 }
 
+static XLAXUIElementRef XLAXCopyContextHitElement(CGPoint point,
+                                                   pid_t expectedPid,
+                                                   NSString **diagnostic) {
+    if (!xlAXRuntime.copyApplicationAndContextAtPosition ||
+        !xlAXRuntime.copyElementUsingContextIdAtPosition) return NULL;
+
+    XLAXUIElementRef seeds[3] = { NULL, NULL, NULL };
+    const char *seedNames[3] = { "pid0", "system", "springboard" };
+    if (xlAXRuntime.createApplication) {
+        seeds[0] = xlAXRuntime.createApplication(0);
+    }
+    if (xlAXRuntime.createSystemWide) {
+        seeds[1] = xlAXRuntime.createSystemWide();
+    }
+    if (xlAXRuntime.createApplication) {
+        seeds[2] = xlAXRuntime.createApplication(getpid());
+    }
+
+    XLAXError lastError = -1;
+    for (NSUInteger seedIndex = 0; seedIndex < 3; seedIndex++) {
+        XLAXUIElementRef seed = seeds[seedIndex];
+        if (!seed) continue;
+        if (xlAXRuntime.setMessagingTimeout) {
+            xlAXRuntime.setMessagingTimeout(seed, 0.20f);
+        }
+
+        XLAXUIElementRef appElement = NULL;
+        uint32_t contextId = 0;
+        XLAXError appError = xlAXRuntime.copyApplicationAndContextAtPosition(
+            seed, &appElement, &contextId, point.x, point.y);
+        lastError = appError;
+        if (appError != XLAXErrorSuccess || !appElement || contextId == 0) {
+            if (appElement) CFRelease(appElement);
+            continue;
+        }
+        if (xlAXRuntime.setMessagingTimeout) {
+            xlAXRuntime.setMessagingTimeout(appElement, 0.20f);
+        }
+
+        if (expectedPid > 0 && xlAXRuntime.getPid) {
+            pid_t resolvedPid = 0;
+            XLAXError pidError = xlAXRuntime.getPid(appElement, &resolvedPid);
+            if (pidError == XLAXErrorSuccess && resolvedPid > 0 &&
+                resolvedPid != expectedPid) {
+                CFRelease(appElement);
+                continue;
+            }
+        }
+
+        for (int option = 0; option <= 2; option++) {
+            XLAXUIElementRef hitElement = NULL;
+            XLAXError hitError = xlAXRuntime.copyElementUsingContextIdAtPosition(
+                appElement, contextId, &hitElement, option, point.x, point.y);
+            lastError = hitError;
+            if (hitError == XLAXErrorSuccess && hitElement) {
+                if (xlAXRuntime.setMessagingTimeout) {
+                    xlAXRuntime.setMessagingTimeout(hitElement, 0.20f);
+                }
+                CFRelease(appElement);
+                for (NSUInteger releaseIndex = 0; releaseIndex < 3; releaseIndex++) {
+                    if (seeds[releaseIndex]) CFRelease(seeds[releaseIndex]);
+                }
+                if (diagnostic) {
+                    *diagnostic = [NSString stringWithFormat:
+                        @"context seed=%s ctx=%u option=%d",
+                        seedNames[seedIndex], contextId, option];
+                }
+                return hitElement;
+            }
+            if (hitElement) CFRelease(hitElement);
+        }
+        CFRelease(appElement);
+    }
+
+    for (NSUInteger releaseIndex = 0; releaseIndex < 3; releaseIndex++) {
+        if (seeds[releaseIndex]) CFRelease(seeds[releaseIndex]);
+    }
+    if (diagnostic) {
+        *diagnostic = [NSString stringWithFormat:@"context hit-test error=%d",
+            (int)lastError];
+    }
+    return NULL;
+}
+
 @implementation XLAXBackDetector
 
 - (XLAXBackDetectionResult)detectBaiduBackButtonAtNormalizedX:(double)x
@@ -221,9 +333,11 @@ static XLAXUIElementRef XLAXCreateSeed(pid_t expectedPid) {
 
     CGSize screenSize = UIScreen.mainScreen.bounds.size;
     CGPoint point = CGPointMake(screenSize.width * x, screenSize.height * y);
-    XLAXUIElementRef hitElement = NULL;
-    XLAXError hitError = -1;
-    if (xlAXRuntime.copyElementAtPositionWithParams) {
+    NSString *contextDiagnostic = nil;
+    XLAXUIElementRef hitElement = XLAXCopyContextHitElement(
+        point, expectedPid, &contextDiagnostic);
+    XLAXError hitError = hitElement ? XLAXErrorSuccess : -1;
+    if (!hitElement && xlAXRuntime.copyElementAtPositionWithParams) {
         hitError = xlAXRuntime.copyElementAtPositionWithParams(
             seed, &hitElement, 1, point.x, point.y);
     }
@@ -241,8 +355,8 @@ static XLAXUIElementRef XLAXCreateSeed(pid_t expectedPid) {
     if (hitError != XLAXErrorSuccess || !hitElement) {
         if (hitElement) CFRelease(hitElement);
         if (diagnostic) {
-            *diagnostic = [NSString stringWithFormat:@"AX hit-test error=%d",
-                (int)hitError];
+            *diagnostic = [NSString stringWithFormat:@"%@; direct error=%d",
+                contextDiagnostic ?: @"context unavailable", (int)hitError];
         }
         return XLAXBackDetectionNotFound;
     }
@@ -266,7 +380,10 @@ static XLAXUIElementRef XLAXCreateSeed(pid_t expectedPid) {
     NSString *elementDiagnostic = nil;
     BOOL found = XLAXElementIsBaiduButton(hitElement, &elementDiagnostic);
     CFRelease(hitElement);
-    if (diagnostic) *diagnostic = elementDiagnostic;
+    if (diagnostic) {
+        *diagnostic = [NSString stringWithFormat:@"%@; %@",
+            contextDiagnostic ?: @"direct", elementDiagnostic ?: @""];
+    }
     return found ? XLAXBackDetectionFound : XLAXBackDetectionNotFound;
 }
 
