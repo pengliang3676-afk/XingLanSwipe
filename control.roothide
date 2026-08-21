@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
-Name: 星澜滑屏辅助识别短测版
-Version: 2.4.11-test1
+Name: 星澜脚本
+Version: 2.4.11
 Architecture: iphoneos-arm64e
-Description: RootHide 左下角小区域截图识别短测版。每 8 秒只截取并识别一次约 42x53 像素区域，识别后立即释放；匹配返回箭头才随机点击；上滑 12–18 秒。
+Description: RootHide 正式版。仅百度前台运行；上滑 180–300 秒；返回识别 420–720 秒；每次只保留约 42x53 像素左下角裁剪图并立即释放，匹配返回箭头后随机点击。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
