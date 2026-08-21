@@ -6,6 +6,12 @@
 typedef UIImage *(*XLCreateScreenImageFn)(void);
 
 static NSString *const XLDetectorErrorDomain = @"com.jibeib.xinglanswipe.detector";
+// Same normalized 42x53-pixel region used for the randomized tap on SE2.
+static const double XLBackRegionMinimumX = 0.036;
+static const double XLBackRegionMaximumX = 0.092;
+static const double XLBackRegionMinimumY = 0.942;
+static const double XLBackRegionMaximumY = 0.982;
+
 static void XLSetDetectorError(NSError **error, NSInteger code, NSString *message) {
     if (!error) return;
     *error = [NSError errorWithDomain:XLDetectorErrorDomain
@@ -27,17 +33,6 @@ static XLCreateScreenImageFn XLScreenCaptureFunction(void) {
         }
     });
     return function;
-}
-
-static CGImageRef XLCreateUprightImage(UIImage *sourceImage) {
-    if (!sourceImage.CGImage || sourceImage.size.width <= 0.0 ||
-        sourceImage.size.height <= 0.0) return nil;
-    UIGraphicsBeginImageContextWithOptions(sourceImage.size, YES, sourceImage.scale);
-    [sourceImage drawInRect:(CGRect){.origin = CGPointZero, .size = sourceImage.size}];
-    UIImage *uprightImage = UIGraphicsGetImageFromCurrentImageContext();
-    CGImageRef image = uprightImage.CGImage ? CGImageRetain(uprightImage.CGImage) : nil;
-    UIGraphicsEndImageContext();
-    return image;
 }
 
 static uint8_t *XLCreateGrayscalePixels(CGImageRef image, size_t width, size_t height) {
@@ -132,66 +127,88 @@ static double XLChevronScoreAt(const uint8_t *pixels, size_t width, size_t heigh
 
 @implementation XLBackIconDetector
 
-- (UIImage *)captureScreenWithError:(NSError **)error {
+- (UIImage *)captureBackRegionWithError:(NSError **)error {
     NSAssert(NSThread.isMainThread, @"capture must run on the main thread");
     XLCreateScreenImageFn function = XLScreenCaptureFunction();
     if (!function) {
         XLSetDetectorError(error, 1, @"screen capture function unavailable");
         return nil;
     }
-    UIImage *image = function();
-    if (!image.CGImage) {
+    UIImage *fullScreenImage = function();
+    if (!fullScreenImage.CGImage || fullScreenImage.size.width <= 0.0 ||
+        fullScreenImage.size.height <= 0.0) {
         XLSetDetectorError(error, 2, @"screen capture returned no image");
         return nil;
     }
-    return image;
+
+    CGSize fullSize = fullScreenImage.size;
+    CGRect cropRect = CGRectMake(
+        fullSize.width * XLBackRegionMinimumX,
+        fullSize.height * XLBackRegionMinimumY,
+        fullSize.width * (XLBackRegionMaximumX - XLBackRegionMinimumX),
+        fullSize.height * (XLBackRegionMaximumY - XLBackRegionMinimumY));
+    cropRect = CGRectIntersection((CGRect){CGPointZero, fullSize}, cropRect);
+    if (CGRectIsEmpty(cropRect)) {
+        fullScreenImage = nil;
+        XLSetDetectorError(error, 3, @"back region is outside screen bounds");
+        return nil;
+    }
+
+    CGFloat sourceScale = fullScreenImage.scale > 0.0 ? fullScreenImage.scale : 1.0;
+    UIGraphicsBeginImageContextWithOptions(cropRect.size, YES, sourceScale);
+    [fullScreenImage drawAtPoint:CGPointMake(-cropRect.origin.x,
+                                              -cropRect.origin.y)];
+    UIImage *croppedImage = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+
+    // The cropped context owns its small bitmap. Drop the full-screen object
+    // before returning so it never crosses onto the matching queue.
+    fullScreenImage = nil;
+    if (!croppedImage.CGImage) {
+        XLSetDetectorError(error, 4, @"could not crop back region");
+        return nil;
+    }
+    return croppedImage;
 }
 
-- (double)matchScoreForScreenshot:(UIImage *)screenshot
-                  normalizedCenter:(CGPoint *)normalizedCenter
-                              error:(NSError **)error {
-    if (normalizedCenter) *normalizedCenter = CGPointZero;
-    CGImageRef screenImage = XLCreateUprightImage(screenshot);
-    if (!screenImage) {
-        XLSetDetectorError(error, 3, @"screen image unavailable");
+- (double)matchScoreForBackRegion:(UIImage *)backRegion
+                            error:(NSError **)error {
+    CGImageRef regionImage = backRegion.CGImage;
+    if (!regionImage) {
+        XLSetDetectorError(error, 5, @"back region image unavailable");
         return -1.0;
     }
 
-    size_t screenWidth = CGImageGetWidth(screenImage);
-    size_t screenHeight = CGImageGetHeight(screenImage);
-    if (screenWidth == 0 || screenHeight == 0) {
-        CGImageRelease(screenImage);
-        XLSetDetectorError(error, 5, @"invalid screen dimensions");
+    size_t regionWidth = CGImageGetWidth(regionImage);
+    size_t regionHeight = CGImageGetHeight(regionImage);
+    if (regionWidth < 24 || regionHeight < 32) {
+        XLSetDetectorError(error, 6, @"back region is too small");
         return -1.0;
     }
 
-    uint8_t *screenPixels = XLCreateGrayscalePixels(
-        screenImage, screenWidth, screenHeight);
-    CGImageRelease(screenImage);
-    if (!screenPixels) {
-        free(screenPixels);
-        XLSetDetectorError(error, 6, @"could not prepare grayscale images");
+    uint8_t *regionPixels = XLCreateGrayscalePixels(
+        regionImage, regionWidth, regionHeight);
+    if (!regionPixels) {
+        XLSetDetectorError(error, 7, @"could not prepare grayscale region");
         return -1.0;
     }
 
-    double widthScale = (double)screenWidth / 750.0;
-    double heightScale = (double)screenHeight / 1334.0;
+    double widthScale = (double)regionWidth / 42.0;
+    double heightScale = (double)regionHeight / 53.0;
     double bestScore = 0.0;
     NSInteger bestX = 0, bestY = 0, bestWidth = 0, bestHeight = 0;
-    // The fixed SE2 region is visible x=38..60 and y=1266..1306 in a
-    // 750x1334 screenshot. The grayscale bitmap rows are vertically flipped.
     NSInteger xStep = MAX(1, (NSInteger)lround(2.0 * widthScale));
     NSInteger yStep = MAX(1, (NSInteger)lround(2.0 * heightScale));
-    for (NSInteger vertexX = (NSInteger)lround(32.0 * widthScale);
-         vertexX <= (NSInteger)lround(46.0 * widthScale); vertexX += xStep) {
-        for (NSInteger centerY = (NSInteger)lround(40.0 * heightScale);
-             centerY <= (NSInteger)lround(56.0 * heightScale); centerY += yStep) {
-            for (NSInteger armWidth = (NSInteger)lround(16.0 * widthScale);
-                 armWidth <= (NSInteger)lround(26.0 * widthScale); armWidth += xStep) {
-                for (NSInteger armHeight = (NSInteger)lround(16.0 * heightScale);
-                     armHeight <= (NSInteger)lround(26.0 * heightScale); armHeight += yStep) {
+    for (NSInteger vertexX = (NSInteger)lround(4.0 * widthScale);
+         vertexX <= (NSInteger)lround(18.0 * widthScale); vertexX += xStep) {
+        for (NSInteger centerY = (NSInteger)lround(14.0 * heightScale);
+             centerY <= (NSInteger)lround(34.0 * heightScale); centerY += yStep) {
+            for (NSInteger armWidth = (NSInteger)lround(14.0 * widthScale);
+                 armWidth <= (NSInteger)lround(24.0 * widthScale); armWidth += xStep) {
+                for (NSInteger armHeight = (NSInteger)lround(14.0 * heightScale);
+                     armHeight <= (NSInteger)lround(24.0 * heightScale); armHeight += yStep) {
                     double score = XLChevronScoreAt(
-                        screenPixels, screenWidth, screenHeight,
+                        regionPixels, regionWidth, regionHeight,
                         vertexX, centerY, armWidth, armHeight);
                     if (score > bestScore) {
                         bestScore = score;
@@ -205,16 +222,10 @@ static double XLChevronScoreAt(const uint8_t *pixels, size_t width, size_t heigh
         }
     }
 
-    free(screenPixels);
-    double visibleCenterX = bestX + bestWidth * 0.5;
-    double visibleCenterY = screenHeight - bestY;
-    if (normalizedCenter) {
-        *normalizedCenter = CGPointMake(visibleCenterX / screenWidth,
-                                        visibleCenterY / screenHeight);
-    }
-    NSLog(@"[XingLanSwipe] local back-chevron score=%.4f vertex=%ldx%ld arms=%ldx%ld screen=%zux%zu",
+    free(regionPixels);
+    NSLog(@"[XingLanSwipe] cropped back-chevron score=%.4f vertex=%ldx%ld arms=%ldx%ld region=%zux%zu",
           bestScore, (long)bestX, (long)bestY, (long)bestWidth,
-          (long)bestHeight, screenWidth, screenHeight);
+          (long)bestHeight, regionWidth, regionHeight);
     return bestScore;
 }
 

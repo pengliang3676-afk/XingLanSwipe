@@ -4,10 +4,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface XLBackIconDetector : NSObject
 
-- (nullable UIImage *)captureScreenWithError:(NSError **)error;
-- (double)matchScoreForScreenshot:(UIImage *)screenshot
-                  normalizedCenter:(CGPoint *)normalizedCenter
-                              error:(NSError **)error;
+- (nullable UIImage *)captureBackRegionWithError:(NSError **)error;
+- (double)matchScoreForBackRegion:(UIImage *)backRegion
+                            error:(NSError **)error;
 
 @end
 

@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
-#import "XLAXBackDetector.h"
+#import "XLBackIconDetector.h"
 #import "XLHIDSender.h"
 #import "XingLanSwipeShared.h"
 
@@ -15,10 +15,12 @@ static const double XLBackTapMinimumX = 0.036;
 static const double XLBackTapMaximumX = 0.092;
 static const double XLBackTapMinimumY = 0.942;
 static const double XLBackTapMaximumY = 0.982;
+static const double XLBackChevronThreshold = 0.65;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
-static XLAXBackDetector *xlBackDetector;
+static XLBackIconDetector *xlBackIconDetector;
+static dispatch_queue_t xlImageMatchQueue;
 static XLHIDSender *xlSender;
 static BOOL xlControlEnabled = NO;
 static BOOL xlRunning = NO;
@@ -162,33 +164,6 @@ static NSString *XLFrontmostBundleIdentifier(void) {
     return XLBundleIdentifierForApplication(XLFrontmostApplication());
 }
 
-static NSInteger XLIntegerValueForKey(id object, NSString *key) {
-    @try {
-        id value = [object valueForKey:key];
-        return [value respondsToSelector:@selector(integerValue)]
-            ? [value integerValue] : 0;
-    } @catch (__unused NSException *exception) {
-        return 0;
-    }
-}
-
-static pid_t XLPidForApplication(id application) {
-    NSInteger processIdentifier = XLIntegerValueForKey(application, @"processIdentifier");
-    if (processIdentifier > 0) return (pid_t)processIdentifier;
-
-    NSInteger pid = XLIntegerValueForKey(application, @"pid");
-    if (pid > 0) return (pid_t)pid;
-
-    @try {
-        id processState = [application valueForKey:@"processState"];
-        pid = XLIntegerValueForKey(processState, @"pid");
-        if (pid > 0) return (pid_t)pid;
-    } @catch (__unused NSException *exception) {
-        return 0;
-    }
-    return 0;
-}
-
 static double XLRandomCoordinate(double minimum, double maximum) {
     double unit = (double)arc4random_uniform(1000001) / 1000000.0;
     return minimum + (maximum - minimum) * unit;
@@ -202,51 +177,87 @@ static void XLPerformBackSwipe(void) {
         XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay);
         return;
     }
-    id frontmostApplication = XLFrontmostApplication();
-    NSString *frontmost = XLBundleIdentifierForApplication(frontmostApplication);
+    NSString *frontmost = XLFrontmostBundleIdentifier();
     if (![frontmost isEqualToString:@"com.baidu.BaiduMobileInfo"]) {
-        NSLog(@"[XingLanSwipe] AX back check skipped; foreground=%@",
+        NSLog(@"[XingLanSwipe] cropped back check skipped; foreground=%@",
               frontmost ?: @"unknown");
-        XLScheduleNextBackSwipe();
-        return;
-    }
-
-    if (!xlBackDetector) xlBackDetector = [XLAXBackDetector new];
-    NSString *diagnostic = nil;
-    double detectionX = (XLBackTapMinimumX + XLBackTapMaximumX) * 0.5;
-    double detectionY = (XLBackTapMinimumY + XLBackTapMaximumY) * 0.5;
-    XLAXBackDetectionResult detection =
-        [xlBackDetector detectBaiduBackButtonAtNormalizedX:detectionX
-                                                        y:detectionY
-                                              expectedPid:XLPidForApplication(frontmostApplication)
-                                               diagnostic:&diagnostic];
-    NSLog(@"[XingLanSwipe] AX back detection result=%ld %@",
-          (long)detection, diagnostic ?: @"");
-    if (detection != XLAXBackDetectionFound) {
-        XLShowStatusText(detection == XLAXBackDetectionUnavailable ? @"AX×" : @"无", 4.0);
         XLScheduleNextBackSwipe();
         return;
     }
 
     xlActionBusy = YES;
     NSUInteger generation = xlRunGeneration;
-    double tapX = XLRandomCoordinate(XLBackTapMinimumX, XLBackTapMaximumX);
-    double tapY = XLRandomCoordinate(XLBackTapMinimumY, XLBackTapMaximumY);
-    if (!xlSender) xlSender = [XLHIDSender new];
-    NSLog(@"[XingLanSwipe] Baidu back button confirmed; randomized HID tap at %.4fx%.4f",
-          tapX, tapY);
-    [xlSender performTapAtNormalizedX:tapX y:tapY
-                           completion:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != xlRunGeneration) return;
-            xlActionBusy = NO;
-            if (success) xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            XLShowStatusText(success ? @"识✓" : @"点×", 4.0);
-            NSLog(@"[XingLanSwipe] AX-confirmed Baidu back tap %@",
-                  success ? @"success" : @"failed");
-            if (xlRunning) XLScheduleNextBackSwipe();
-        });
-    }];
+    if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
+
+    __block UIImage *backRegion = nil;
+    __block NSError *captureError = nil;
+    @autoreleasepool {
+        backRegion = [xlBackIconDetector captureBackRegionWithError:&captureError];
+    }
+    if (!backRegion) {
+        xlActionBusy = NO;
+        NSLog(@"[XingLanSwipe] cropped back capture failed: %@",
+              captureError.localizedDescription ?: @"unknown");
+        captureError = nil;
+        XLShowStatusText(@"图×", 4.0);
+        XLScheduleNextBackSwipe();
+        return;
+    }
+
+    dispatch_async(xlImageMatchQueue, ^{
+        @autoreleasepool {
+            UIImage *imageForMatch = backRegion;
+            backRegion = nil;
+            NSError *matchError = nil;
+            double score = [xlBackIconDetector matchScoreForBackRegion:imageForMatch
+                                                                  error:&matchError];
+            imageForMatch = nil;
+            BOOL found = !matchError && score >= XLBackChevronThreshold;
+            NSString *errorText = matchError.localizedDescription;
+            matchError = nil;
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!xlRunning || generation != xlRunGeneration) return;
+                if (errorText.length > 0) {
+                    xlActionBusy = NO;
+                    NSLog(@"[XingLanSwipe] cropped back match failed: %@", errorText);
+                    XLShowStatusText(@"图×", 4.0);
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
+                NSLog(@"[XingLanSwipe] cropped back detection %@ score=%.4f",
+                      found ? @"present" : @"absent", score);
+                if (!found) {
+                    xlActionBusy = NO;
+                    XLShowStatusText(@"无", 4.0);
+                    XLScheduleNextBackSwipe();
+                    return;
+                }
+
+                double tapX = XLRandomCoordinate(
+                    XLBackTapMinimumX, XLBackTapMaximumX);
+                double tapY = XLRandomCoordinate(
+                    XLBackTapMinimumY, XLBackTapMaximumY);
+                if (!xlSender) xlSender = [XLHIDSender new];
+                NSLog(@"[XingLanSwipe] cropped back confirmed; randomized HID tap at %.4fx%.4f",
+                      tapX, tapY);
+                [xlSender performTapAtNormalizedX:tapX y:tapY
+                                       completion:^(BOOL success) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (generation != xlRunGeneration) return;
+                        xlActionBusy = NO;
+                        if (success) {
+                            xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+                        }
+                        XLShowStatusText(success ? @"识✓" : @"点×", 4.0);
+                        NSLog(@"[XingLanSwipe] cropped back tap %@",
+                              success ? @"success" : @"failed");
+                        if (xlRunning) XLScheduleNextBackSwipe();
+                    });
+                }];
+            });
+        }
+    });
 }
 
 static void XLScheduleSwipeAfterDelay(uint32_t delay) {
@@ -445,6 +456,10 @@ static void XingLanSwipeInit(void) {
         if ([bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 xlSender = [XLHIDSender new];
+                xlBackIconDetector = [XLBackIconDetector new];
+                xlImageMatchQueue = dispatch_queue_create(
+                    "com.jibeib.xinglanswipe.cropped-image-match",
+                    DISPATCH_QUEUE_SERIAL);
                 xlControlEnabled = XLReadRunningPreference();
                 XLInstallStatusOverlay();
                 XLSetRunning(NO);

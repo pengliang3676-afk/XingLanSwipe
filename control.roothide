@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜滑屏辅助识别短测版
-Version: 2.4.10-test2
+Version: 2.4.11-test1
 Architecture: iphoneos-arm64e
-Description: RootHide 跨进程辅助功能识别短测版。修复 AX 1102 后使用前台窗口上下文识别；每 8 秒检查左下角，只有识别到“百度按钮”才在约 42x53 像素范围内随机点击；无截图、无 OCR；上滑 12–18 秒。
+Description: RootHide 左下角小区域截图识别短测版。每 8 秒只截取并识别一次约 42x53 像素区域，识别后立即释放；匹配返回箭头才随机点击；上滑 12–18 秒。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
