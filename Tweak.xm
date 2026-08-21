@@ -1,13 +1,14 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
+#import "XLAXBackDetector.h"
 #import "XLHIDSender.h"
 #import "XingLanSwipeShared.h"
 
-static const uint32_t XLMinimumDelay = 180;
-static const uint32_t XLMaximumDelay = 300;
-static const uint32_t XLBackMinimumDelay = 420;
-static const uint32_t XLBackMaximumDelay = 720;
+static const uint32_t XLMinimumDelay = 12;
+static const uint32_t XLMaximumDelay = 18;
+static const uint32_t XLBackMinimumDelay = 8;
+static const uint32_t XLBackMaximumDelay = 8;
 static const uint32_t XLConflictRetryDelay = 5;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 static const double XLBackTapMinimumX = 0.036;
@@ -17,6 +18,7 @@ static const double XLBackTapMaximumY = 0.982;
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
+static XLAXBackDetector *xlBackDetector;
 static XLHIDSender *xlSender;
 static BOOL xlControlEnabled = NO;
 static BOOL xlRunning = NO;
@@ -130,22 +132,60 @@ static BOOL XLReadRunningPreference(void) {
 
 @interface NSObject (XingLanApplicationIdentity)
 - (NSString *)bundleIdentifier;
+- (NSInteger)processIdentifier;
+- (NSInteger)pid;
+- (id)processState;
 @end
 
-static NSString *XLFrontmostBundleIdentifier(void) {
+static id XLFrontmostApplication(void) {
     @try {
         UIApplication *application = UIApplication.sharedApplication;
         if (![application respondsToSelector:@selector(_accessibilityFrontMostApplication)]) {
             return nil;
         }
-        id frontmost = [application _accessibilityFrontMostApplication];
-        if (![frontmost respondsToSelector:@selector(bundleIdentifier)]) return nil;
-        NSString *bundleIdentifier = [frontmost bundleIdentifier];
-        return [bundleIdentifier isKindOfClass:NSString.class] ? bundleIdentifier : nil;
+        return [application _accessibilityFrontMostApplication];
     } @catch (NSException *exception) {
         NSLog(@"[XingLanSwipe] foreground lookup failed: %@", exception.reason);
         return nil;
     }
+}
+
+static NSString *XLBundleIdentifierForApplication(id application) {
+    @try {
+        if (![application respondsToSelector:@selector(bundleIdentifier)]) return nil;
+        NSString *bundleIdentifier = [application bundleIdentifier];
+        return [bundleIdentifier isKindOfClass:NSString.class] ? bundleIdentifier : nil;
+    } @catch (NSException *exception) {
+        NSLog(@"[XingLanSwipe] bundle lookup failed: %@", exception.reason);
+        return nil;
+    }
+}
+
+static NSString *XLFrontmostBundleIdentifier(void) {
+    return XLBundleIdentifierForApplication(XLFrontmostApplication());
+}
+
+static pid_t XLPidForApplication(id application) {
+    @try {
+        if ([application respondsToSelector:@selector(processIdentifier)]) {
+            NSInteger processIdentifier = [application processIdentifier];
+            if (processIdentifier > 0) return (pid_t)processIdentifier;
+        }
+        if ([application respondsToSelector:@selector(pid)]) {
+            NSInteger pid = [application pid];
+            if (pid > 0) return (pid_t)pid;
+        }
+        if ([application respondsToSelector:@selector(processState)]) {
+            id processState = [application processState];
+            if ([processState respondsToSelector:@selector(pid)]) {
+                NSInteger pid = [processState pid];
+                if (pid > 0) return (pid_t)pid;
+            }
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[XingLanSwipe] foreground pid lookup failed: %@", exception.reason);
+    }
+    return 0;
 }
 
 static double XLRandomCoordinate(double minimum, double maximum) {
@@ -161,10 +201,28 @@ static void XLPerformBackSwipe(void) {
         XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay);
         return;
     }
-    NSString *frontmost = XLFrontmostBundleIdentifier();
+    id frontmostApplication = XLFrontmostApplication();
+    NSString *frontmost = XLBundleIdentifierForApplication(frontmostApplication);
     if (![frontmost isEqualToString:@"com.baidu.BaiduMobileInfo"]) {
-        NSLog(@"[XingLanSwipe] fixed back tap skipped; foreground=%@",
+        NSLog(@"[XingLanSwipe] AX back check skipped; foreground=%@",
               frontmost ?: @"unknown");
+        XLScheduleNextBackSwipe();
+        return;
+    }
+
+    if (!xlBackDetector) xlBackDetector = [XLAXBackDetector new];
+    NSString *diagnostic = nil;
+    double detectionX = (XLBackTapMinimumX + XLBackTapMaximumX) * 0.5;
+    double detectionY = (XLBackTapMinimumY + XLBackTapMaximumY) * 0.5;
+    XLAXBackDetectionResult detection =
+        [xlBackDetector detectBaiduBackButtonAtNormalizedX:detectionX
+                                                        y:detectionY
+                                              expectedPid:XLPidForApplication(frontmostApplication)
+                                               diagnostic:&diagnostic];
+    NSLog(@"[XingLanSwipe] AX back detection result=%ld %@",
+          (long)detection, diagnostic ?: @"");
+    if (detection != XLAXBackDetectionFound) {
+        XLShowStatusText(detection == XLAXBackDetectionUnavailable ? @"AX×" : @"无", 4.0);
         XLScheduleNextBackSwipe();
         return;
     }
@@ -174,7 +232,7 @@ static void XLPerformBackSwipe(void) {
     double tapX = XLRandomCoordinate(XLBackTapMinimumX, XLBackTapMaximumX);
     double tapY = XLRandomCoordinate(XLBackTapMinimumY, XLBackTapMaximumY);
     if (!xlSender) xlSender = [XLHIDSender new];
-    NSLog(@"[XingLanSwipe] Baidu foreground; randomized HID tap at %.4fx%.4f",
+    NSLog(@"[XingLanSwipe] Baidu back button confirmed; randomized HID tap at %.4fx%.4f",
           tapX, tapY);
     [xlSender performTapAtNormalizedX:tapX y:tapY
                            completion:^(BOOL success) {
@@ -182,8 +240,8 @@ static void XLPerformBackSwipe(void) {
             if (generation != xlRunGeneration) return;
             xlActionBusy = NO;
             if (success) xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            XLShowStatusText(success ? @"点✓" : @"点×", 4.0);
-            NSLog(@"[XingLanSwipe] randomized Baidu back tap %@",
+            XLShowStatusText(success ? @"识✓" : @"点×", 4.0);
+            NSLog(@"[XingLanSwipe] AX-confirmed Baidu back tap %@",
                   success ? @"success" : @"failed");
             if (xlRunning) XLScheduleNextBackSwipe();
         });

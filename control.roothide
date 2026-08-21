@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
-Name: 星澜滑屏
-Version: 2.4.9
+Name: 星澜滑屏辅助识别短测版
+Version: 2.4.10-test1
 Architecture: iphoneos-arm64e
-Description: RootHide 正式版。控制中心关闭时彻底停止并隐藏；开启后仅在百度前台运行，离开暂停；上滑间隔 180–300 秒；返回点击间隔 420–720 秒；左下角约 42x53 像素随机点击。
+Description: RootHide 跨进程辅助功能识别短测版。每 8 秒检查左下角，只有识别到“百度按钮”才在约 42x53 像素范围内随机点击；无截图、无 OCR；上滑 12–18 秒。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
