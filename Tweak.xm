@@ -132,9 +132,6 @@ static BOOL XLReadRunningPreference(void) {
 
 @interface NSObject (XingLanApplicationIdentity)
 - (NSString *)bundleIdentifier;
-- (NSInteger)processIdentifier;
-- (NSInteger)pid;
-- (id)processState;
 @end
 
 static id XLFrontmostApplication(void) {
@@ -165,25 +162,29 @@ static NSString *XLFrontmostBundleIdentifier(void) {
     return XLBundleIdentifierForApplication(XLFrontmostApplication());
 }
 
-static pid_t XLPidForApplication(id application) {
+static NSInteger XLIntegerValueForKey(id object, NSString *key) {
     @try {
-        if ([application respondsToSelector:@selector(processIdentifier)]) {
-            NSInteger processIdentifier = [application processIdentifier];
-            if (processIdentifier > 0) return (pid_t)processIdentifier;
-        }
-        if ([application respondsToSelector:@selector(pid)]) {
-            NSInteger pid = [application pid];
-            if (pid > 0) return (pid_t)pid;
-        }
-        if ([application respondsToSelector:@selector(processState)]) {
-            id processState = [application processState];
-            if ([processState respondsToSelector:@selector(pid)]) {
-                NSInteger pid = [processState pid];
-                if (pid > 0) return (pid_t)pid;
-            }
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"[XingLanSwipe] foreground pid lookup failed: %@", exception.reason);
+        id value = [object valueForKey:key];
+        return [value respondsToSelector:@selector(integerValue)]
+            ? [value integerValue] : 0;
+    } @catch (__unused NSException *exception) {
+        return 0;
+    }
+}
+
+static pid_t XLPidForApplication(id application) {
+    NSInteger processIdentifier = XLIntegerValueForKey(application, @"processIdentifier");
+    if (processIdentifier > 0) return (pid_t)processIdentifier;
+
+    NSInteger pid = XLIntegerValueForKey(application, @"pid");
+    if (pid > 0) return (pid_t)pid;
+
+    @try {
+        id processState = [application valueForKey:@"processState"];
+        pid = XLIntegerValueForKey(processState, @"pid");
+        if (pid > 0) return (pid_t)pid;
+    } @catch (__unused NSException *exception) {
+        return 0;
     }
     return 0;
 }
