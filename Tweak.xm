@@ -25,8 +25,9 @@ static XLHIDSender *xlSender;
 static BOOL xlControlEnabled = NO;
 static BOOL xlRunning = NO;
 static BOOL xlActionBusy = NO;
+static BOOL xlDeviceLocked = NO;
+static int xlLockStateToken = 0;
 static NSUInteger xlRunGeneration = 0;
-static NSUInteger xlForegroundCheckSerial = 0;
 static CFAbsoluteTime xlLastGestureEndTime = 0.0;
 static CFAbsoluteTime xlNextBackCheckTime = 0.0;
 static UIWindow *xlStatusWindow;
@@ -128,42 +129,6 @@ static BOOL XLReadRunningPreference(void) {
     return running;
 }
 
-@interface UIApplication (XingLanFrontmostApplication)
-- (id)_accessibilityFrontMostApplication;
-@end
-
-@interface NSObject (XingLanApplicationIdentity)
-- (NSString *)bundleIdentifier;
-@end
-
-static id XLFrontmostApplication(void) {
-    @try {
-        UIApplication *application = UIApplication.sharedApplication;
-        if (![application respondsToSelector:@selector(_accessibilityFrontMostApplication)]) {
-            return nil;
-        }
-        return [application _accessibilityFrontMostApplication];
-    } @catch (NSException *exception) {
-        NSLog(@"[XingLanSwipe] foreground lookup failed: %@", exception.reason);
-        return nil;
-    }
-}
-
-static NSString *XLBundleIdentifierForApplication(id application) {
-    @try {
-        if (![application respondsToSelector:@selector(bundleIdentifier)]) return nil;
-        NSString *bundleIdentifier = [application bundleIdentifier];
-        return [bundleIdentifier isKindOfClass:NSString.class] ? bundleIdentifier : nil;
-    } @catch (NSException *exception) {
-        NSLog(@"[XingLanSwipe] bundle lookup failed: %@", exception.reason);
-        return nil;
-    }
-}
-
-static NSString *XLFrontmostBundleIdentifier(void) {
-    return XLBundleIdentifierForApplication(XLFrontmostApplication());
-}
-
 static double XLRandomCoordinate(double minimum, double maximum) {
     double unit = (double)arc4random_uniform(1000001) / 1000000.0;
     return minimum + (maximum - minimum) * unit;
@@ -177,14 +142,6 @@ static void XLPerformBackSwipe(void) {
         XLScheduleBackSwipeAfterDelay(XLConflictRetryDelay);
         return;
     }
-    NSString *frontmost = XLFrontmostBundleIdentifier();
-    if (![frontmost isEqualToString:@"com.baidu.BaiduMobileInfo"]) {
-        NSLog(@"[XingLanSwipe] cropped back check skipped; foreground=%@",
-              frontmost ?: @"unknown");
-        XLScheduleNextBackSwipe();
-        return;
-    }
-
     xlActionBusy = YES;
     NSUInteger generation = xlRunGeneration;
     if (!xlBackIconDetector) xlBackIconDetector = [XLBackIconDetector new];
@@ -299,11 +256,6 @@ static void XLScheduleNextBackSwipe(void) {
     XLScheduleBackSwipeAfterDelay(delay);
 }
 
-static BOOL XLBaiduIsFrontmost(void) {
-    return [XLFrontmostBundleIdentifier()
-        isEqualToString:@"com.baidu.BaiduMobileInfo"];
-}
-
 static void XLSetRunning(BOOL running) {
     if (xlRunning == running) {
         XLUpdateUI();
@@ -324,25 +276,6 @@ static void XLSetRunning(BOOL running) {
         NSLog(@"[XingLanSwipe] stopped");
     }
     XLUpdateUI();
-}
-
-static void XLReconcileAutomaticRunningState(void) {
-    NSUInteger serial = ++xlForegroundCheckSerial;
-    if (!xlControlEnabled) {
-        XLSetRunning(NO);
-        return;
-    }
-    if (!XLBaiduIsFrontmost()) {
-        XLSetRunning(NO);
-        return;
-    }
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(1.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (serial != xlForegroundCheckSerial) return;
-        XLSetRunning(xlControlEnabled && XLBaiduIsFrontmost());
-    });
 }
 
 static void XLInstallStatusOverlay(void) {
@@ -411,14 +344,28 @@ static void XLInstallStatusOverlay(void) {
     XLUpdateUI();
 }
 
-static void XLLockCallback(CFNotificationCenterRef center, void *observer,
-                           CFStringRef name, const void *object,
-                           CFDictionaryRef userInfo) {
-    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        xlForegroundCheckSerial++;
-        XLSetRunning(NO);
-    });
+static void XLRegisterLockStateObserver(void) {
+    int status = notify_register_dispatch(
+        "com.apple.springboard.lockstate",
+        &xlLockStateToken,
+        dispatch_get_main_queue(),
+        ^(int token) {
+            uint64_t state = 0;
+            if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) return;
+            xlDeviceLocked = state != 0;
+            XLSetRunning(xlControlEnabled && !xlDeviceLocked);
+        });
+    if (status != NOTIFY_STATUS_OK) {
+        xlLockStateToken = 0;
+        xlDeviceLocked = NO;
+        NSLog(@"[XingLanSwipe] lock-state observer unavailable: %d", status);
+        return;
+    }
+
+    uint64_t initialState = 0;
+    if (notify_get_state(xlLockStateToken, &initialState) == NOTIFY_STATUS_OK) {
+        xlDeviceLocked = initialState != 0;
+    }
 }
 
 static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *observer,
@@ -428,26 +375,9 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
     BOOL requestedRunning = XLReadRunningPreference();
     dispatch_async(dispatch_get_main_queue(), ^{
         xlControlEnabled = requestedRunning;
-        if (!requestedRunning) {
-            xlForegroundCheckSerial++;
-            XLSetRunning(NO);
-        } else {
-            XLReconcileAutomaticRunningState();
-        }
+        XLSetRunning(requestedRunning && !xlDeviceLocked);
     });
 }
-
-%hook SpringBoard
-
-- (void)frontDisplayDidChange:(id)display {
-    %orig;
-    (void)display;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        XLReconcileAutomaticRunningState();
-    });
-}
-
-%end
 
 __attribute__((constructor))
 static void XingLanSwipeInit(void) {
@@ -461,14 +391,9 @@ static void XingLanSwipeInit(void) {
                     "com.jibeib.xinglanswipe.cropped-image-match",
                     DISPATCH_QUEUE_SERIAL);
                 xlControlEnabled = XLReadRunningPreference();
+                XLRegisterLockStateObserver();
                 XLInstallStatusOverlay();
-                XLSetRunning(NO);
-                XLReconcileAutomaticRunningState();
-                CFNotificationCenterAddObserver(
-                    CFNotificationCenterGetDarwinNotifyCenter(),
-                    NULL, XLLockCallback,
-                    CFSTR("com.apple.springboard.lockcomplete"),
-                    NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+                XLSetRunning(xlControlEnabled && !xlDeviceLocked);
                 CFNotificationCenterAddObserver(
                     CFNotificationCenterGetDarwinNotifyCenter(),
                     NULL, XLControlCenterStateCallback,

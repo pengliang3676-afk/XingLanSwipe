@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜脚本
-Version: 2.4.11
+Version: 2.4.12
 Architecture: iphoneos-arm64e
-Description: RootHide 正式版。仅百度前台运行；上滑 180–300 秒；返回识别 420–720 秒；每次只保留约 42x53 像素左下角裁剪图并立即释放，匹配返回箭头后随机点击。
+Description: RootHide 正式版。仅由控制中心开关控制，不判断前台应用；上滑 180–300 秒；返回识别 420–720 秒；每次只保留约 42x53 像素左下角裁剪图并立即释放，匹配返回箭头后随机点击。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
