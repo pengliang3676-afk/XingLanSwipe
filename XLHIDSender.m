@@ -162,15 +162,14 @@ static double XLRandom(double minimum, double maximum) {
         }
 
         // Keep the gesture in the central content area. The complete DOWN to UP
-        // duration stays below 0.20 seconds so vertical video paging still has
-        // enough release velocity, while coordinates and event cadence vary.
+        // Wide duration range used to verify whether slower swipes still page.
         double startX = XLRandom(0.46, 0.54);
         double endX = MIN(MAX(startX + XLRandom(-0.025, 0.025), 0.45), 0.55);
         double startY = up ? XLRandom(0.82, 0.87) : XLRandom(0.20, 0.27);
         double endY = up ? XLRandom(0.20, 0.27) : XLRandom(0.80, 0.86);
         double controlOffset = XLRandom(-0.018, 0.018);
         double wobbleAmplitude = XLRandom(-0.0025, 0.0025);
-        double totalDuration = XLRandom(0.16, 0.20);
+        double totalDuration = XLRandom(0.20, 0.65);
         double pressHold = XLRandom(0.018, 0.030);
         double releaseHold = XLRandom(0.008, 0.014);
         double moveDuration = totalDuration - pressHold - releaseHold;
