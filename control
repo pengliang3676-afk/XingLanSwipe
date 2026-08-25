@@ -1,8 +1,8 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜脚本
-Version: 2.4.15
+Version: 2.4.16
 Architecture: iphoneos-arm64
-Description: Dopamine rootless 触控测试版。仅由控制中心开关控制；翻页临时缩短为 10–20 秒，8% 概率下滑；0.20–0.65 秒自然 HID 手势；返回识别和随机点击保持原逻辑。
+Description: Dopamine rootless 正式版。仅由控制中心开关控制，不判断前台应用；翻页 180–300 秒，8% 概率下滑；0.20–0.65 秒自然 HID 手势；返回识别 420–720 秒，匹配返回箭头后随机点击。
 Maintainer: XingLan
 Author: XingLan
 Section: Tweaks
