@@ -5,8 +5,9 @@
 #import "XLHIDSender.h"
 #import "XingLanSwipeShared.h"
 
-static const uint32_t XLMinimumDelay = 180;
-static const uint32_t XLMaximumDelay = 300;
+// Short device-validation interval. Restore to 180-300 after HID paging is verified.
+static const uint32_t XLMinimumDelay = 10;
+static const uint32_t XLMaximumDelay = 20;
 static const uint32_t XLBackMinimumDelay = 420;
 static const uint32_t XLBackMaximumDelay = 720;
 static const uint32_t XLConflictRetryDelay = 5;
