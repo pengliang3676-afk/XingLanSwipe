@@ -6,6 +6,8 @@ typedef void (^XLHIDCompletion)(BOOL success);
 
 @interface XLHIDSender : NSObject
 - (void)performNaturalUpSwipeWithCompletion:(XLHIDCompletion)completion;
+- (void)performNaturalSwipeUp:(BOOL)up
+                   completion:(XLHIDCompletion)completion;
 - (void)performTapAtNormalizedX:(double)x
                               y:(double)y
                      completion:(XLHIDCompletion)completion;

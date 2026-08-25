@@ -148,6 +148,11 @@ static double XLRandom(double minimum, double maximum) {
 }
 
 - (void)performNaturalUpSwipeWithCompletion:(XLHIDCompletion)completion {
+    [self performNaturalSwipeUp:YES completion:completion];
+}
+
+- (void)performNaturalSwipeUp:(BOOL)up
+                   completion:(XLHIDCompletion)completion {
     dispatch_async(_queue, ^{
         if (![self ready]) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -156,29 +161,45 @@ static double XLRandom(double minimum, double maximum) {
             return;
         }
 
-        // Keep the gesture in the central content area so app buttons, edge
-        // gestures and horizontal carousels are less likely to consume it.
-        double startX = XLRandom(0.47, 0.53);
-        double startY = XLRandom(0.82, 0.87);
-        double endX = XLRandom(0.47, 0.53);
-        double endY = XLRandom(0.20, 0.27);
+        // Keep the gesture in the central content area. The complete DOWN to UP
+        // duration stays below 0.20 seconds so vertical video paging still has
+        // enough release velocity, while coordinates and event cadence vary.
+        double startX = XLRandom(0.46, 0.54);
+        double endX = MIN(MAX(startX + XLRandom(-0.025, 0.025), 0.45), 0.55);
+        double startY = up ? XLRandom(0.82, 0.87) : XLRandom(0.20, 0.27);
+        double endY = up ? XLRandom(0.20, 0.27) : XLRandom(0.80, 0.86);
         double controlOffset = XLRandom(-0.018, 0.018);
-        double duration = 0.20;
-        NSInteger steps = 30;
+        double wobbleAmplitude = XLRandom(-0.0025, 0.0025);
+        double totalDuration = XLRandom(0.16, 0.20);
+        double pressHold = XLRandom(0.018, 0.030);
+        double releaseHold = XLRandom(0.008, 0.014);
+        double moveDuration = totalDuration - pressHold - releaseHold;
+        NSInteger steps = 24 + (NSInteger)arc4random_uniform(9);
+        double timingWeights[32];
+        double timingWeightTotal = 0.0;
+        for (NSInteger i = 0; i < steps; i++) {
+            timingWeights[i] = XLRandom(0.88, 1.12);
+            timingWeightTotal += timingWeights[i];
+        }
+
         BOOL success = [self sendX:startX y:startY phase:XLTouchPhaseDown];
-        if (success) usleep(30000 + arc4random_uniform(18001));
+        if (success) usleep((useconds_t)(pressHold * 1000000.0));
 
         for (NSInteger i = 1; success && i <= steps; i++) {
             double t = (double)i / (double)steps;
             double eased = t * t * (3.0 - 2.0 * t);
             double curve = 4.0 * t * (1.0 - t) * controlOffset;
-            double x = startX + (endX - startX) * eased + curve;
+            double wobble = sin(M_PI * t) * sin(3.0 * M_PI * t) * wobbleAmplitude;
+            double x = startX + (endX - startX) * eased + curve + wobble;
             double y = startY + (endY - startY) * eased;
             success = [self sendX:x y:y phase:XLTouchPhaseMove];
-            usleep((useconds_t)((duration / (double)steps) * 1000000.0));
+            if (success) {
+                double interval = moveDuration * timingWeights[i - 1] / timingWeightTotal;
+                usleep((useconds_t)(interval * 1000000.0));
+            }
         }
         if (success) {
-            usleep(12000 + arc4random_uniform(9001));
+            usleep((useconds_t)(releaseHold * 1000000.0));
             success = [self sendX:endX y:endY phase:XLTouchPhaseUp];
         }
 

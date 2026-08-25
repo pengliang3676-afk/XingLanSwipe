@@ -10,6 +10,7 @@ static const uint32_t XLMaximumDelay = 300;
 static const uint32_t XLBackMinimumDelay = 420;
 static const uint32_t XLBackMaximumDelay = 720;
 static const uint32_t XLConflictRetryDelay = 5;
+static const uint32_t XLDownSwipeProbabilityPercent = 8;
 static const CFTimeInterval XLGestureCooldown = 5.0;
 static const double XLBackTapMinimumX = 0.036;
 static const double XLBackTapMaximumX = 0.092;
@@ -108,13 +109,15 @@ static void XLPerformSwipe(void) {
     }
     xlActionBusy = YES;
     NSUInteger generation = xlRunGeneration;
+    BOOL swipeUp = arc4random_uniform(100) >= XLDownSwipeProbabilityPercent;
     if (!xlSender) xlSender = [XLHIDSender new];
-    [xlSender performNaturalUpSwipeWithCompletion:^(BOOL success) {
+    [xlSender performNaturalSwipeUp:swipeUp completion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != xlRunGeneration) return;
             xlActionBusy = NO;
             xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            NSLog(@"[XingLanSwipe] local swipe %@", success ? @"success" : @"failed");
+            NSLog(@"[XingLanSwipe] local %@ swipe %@",
+                  swipeUp ? @"up" : @"down", success ? @"success" : @"failed");
             if (xlRunning) XLScheduleNext();
         });
     }];
