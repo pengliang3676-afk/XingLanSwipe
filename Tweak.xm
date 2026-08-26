@@ -54,7 +54,7 @@ static void XLUpdateUI(void) {
         status.hidden = NO;
         status.text = xlRunning ? @"开" : @"关";
         status.backgroundColor = xlRunning
-            ? [UIColor colorWithRed:0.18 green:0.68 blue:0.30 alpha:0.86]
+            ? [UIColor colorWithRed:1.00 green:0.72 blue:0.05 alpha:0.90]
             : [UIColor colorWithWhite:0.35 alpha:0.82];
     }
 }
