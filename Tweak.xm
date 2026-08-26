@@ -53,6 +53,9 @@ static void XLUpdateUI(void) {
         }
         status.hidden = NO;
         status.text = xlRunning ? @"开" : @"关";
+        status.backgroundColor = xlRunning
+            ? [UIColor colorWithRed:0.18 green:0.68 blue:0.30 alpha:0.86]
+            : [UIColor colorWithWhite:0.35 alpha:0.82];
     }
 }
 
@@ -323,7 +326,7 @@ static void XLInstallStatusOverlay(void) {
     status.textAlignment = NSTextAlignmentCenter;
     status.font = [UIFont boldSystemFontOfSize:20.0];
     status.textColor = UIColor.whiteColor;
-    status.backgroundColor = [UIColor colorWithRed:0.05 green:0.46 blue:0.94 alpha:0.82];
+    status.backgroundColor = [UIColor colorWithWhite:0.35 alpha:0.82];
     status.layer.cornerRadius = 27.0;
     status.layer.borderWidth = 1.5;
     status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.80].CGColor;
