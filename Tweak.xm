@@ -437,7 +437,8 @@ static void XLInstallStatusOverlay(void) {
     UIButton *pauseButton = [UIButton buttonWithType:UIButtonTypeCustom];
     pauseButton.translatesAutoresizingMaskIntoConstraints = NO;
     [pauseButton setTitle:@"暂停" forState:UIControlStateNormal];
-    [pauseButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    [pauseButton setTitleColor:[UIColor colorWithRed:0.20 green:0.84 blue:0.38 alpha:1.0]
+                      forState:UIControlStateNormal];
     pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
     [pauseButton addTarget:controller
                     action:@selector(xlPauseTapped)
