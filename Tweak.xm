@@ -84,7 +84,7 @@ static void XLSetActionMenuExpanded(BOOL expanded, BOOL animated) {
         xlActionPanel.userInteractionEnabled = YES;
     }
 
-    xlActionPanelWidthConstraint.constant = expanded ? 118.0 : 18.0;
+    xlActionPanelWidthConstraint.constant = expanded ? 177.0 : 27.0;
     void (^changes)(void) = ^{
         xlActionPanel.alpha = expanded ? 1.0 : 0.0;
         [xlOverlayRootView layoutIfNeeded];
@@ -424,7 +424,7 @@ static void XLInstallStatusOverlay(void) {
     UIView *actionPanel = [UIView new];
     actionPanel.translatesAutoresizingMaskIntoConstraints = NO;
     actionPanel.backgroundColor = [UIColor colorWithWhite:0.24 alpha:0.91];
-    actionPanel.layer.cornerRadius = 17.0;
+    actionPanel.layer.cornerRadius = 25.5;
     actionPanel.layer.shadowColor = UIColor.blackColor.CGColor;
     actionPanel.layer.shadowOpacity = 0.28;
     actionPanel.layer.shadowRadius = 4.0;
@@ -438,7 +438,7 @@ static void XLInstallStatusOverlay(void) {
     pauseButton.translatesAutoresizingMaskIntoConstraints = NO;
     [pauseButton setTitle:@"暂停" forState:UIControlStateNormal];
     [pauseButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
     [pauseButton addTarget:controller
                     action:@selector(xlPauseTapped)
           forControlEvents:UIControlEventTouchUpInside];
@@ -448,7 +448,7 @@ static void XLInstallStatusOverlay(void) {
     [closeButton setTitle:@"关闭" forState:UIControlStateNormal];
     [closeButton setTitleColor:[UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0]
                       forState:UIControlStateNormal];
-    closeButton.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    closeButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
     [closeButton addTarget:controller
                     action:@selector(xlCloseTapped)
           forControlEvents:UIControlEventTouchUpInside];
@@ -483,7 +483,7 @@ static void XLInstallStatusOverlay(void) {
 
     UILayoutGuide *safeArea = controller.view.safeAreaLayoutGuide;
     NSLayoutConstraint *panelWidth =
-        [actionPanel.widthAnchor constraintEqualToConstant:18.0];
+        [actionPanel.widthAnchor constraintEqualToConstant:27.0];
     [NSLayoutConstraint activateConstraints:@[
         [status.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:5.0],
         [status.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor constant:54.0],
@@ -492,19 +492,19 @@ static void XLInstallStatusOverlay(void) {
         [actionPanel.leadingAnchor constraintEqualToAnchor:status.centerXAnchor],
         [actionPanel.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
         panelWidth,
-        [actionPanel.heightAnchor constraintEqualToConstant:34.0],
-        [pauseButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:18.0],
+        [actionPanel.heightAnchor constraintEqualToConstant:51.0],
+        [pauseButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
         [pauseButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
         [pauseButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
-        [pauseButton.widthAnchor constraintEqualToConstant:50.0],
+        [pauseButton.widthAnchor constraintEqualToConstant:75.0],
         [separator.leadingAnchor constraintEqualToAnchor:pauseButton.trailingAnchor],
         [separator.centerYAnchor constraintEqualToAnchor:actionPanel.centerYAnchor],
-        [separator.widthAnchor constraintEqualToConstant:1.0],
-        [separator.heightAnchor constraintEqualToConstant:20.0],
+        [separator.widthAnchor constraintEqualToConstant:1.5],
+        [separator.heightAnchor constraintEqualToConstant:30.0],
         [closeButton.leadingAnchor constraintEqualToAnchor:separator.trailingAnchor],
         [closeButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
         [closeButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
-        [closeButton.widthAnchor constraintEqualToConstant:49.0],
+        [closeButton.widthAnchor constraintEqualToConstant:73.5],
     ]];
     xlStatusWindow = window;
     xlOverlayRootView = controller.view;
