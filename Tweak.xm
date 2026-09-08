@@ -121,10 +121,20 @@ static void XLUpdateUI(void) {
         status.hidden = NO;
         NSString *statusText = xlUserPaused ? @"停" : (xlRunning ? @"开" : @"关");
         [status setTitle:statusText forState:UIControlStateNormal];
-        status.backgroundColor = xlRunning
-            ? [UIColor colorWithRed:0.90 green:0.12 blue:0.16 alpha:0.90]
-            : [UIColor colorWithWhite:0.35 alpha:0.82];
-        [xlPauseButton setTitle:(xlUserPaused ? @"继续" : @"停")
+        if (xlRunning) {
+            status.backgroundColor =
+                [UIColor colorWithRed:0.90 green:0.12 blue:0.16 alpha:0.90];
+        } else if (xlUserPaused) {
+            status.backgroundColor =
+                [UIColor colorWithRed:0.20 green:0.84 blue:0.38 alpha:0.94];
+        } else {
+            status.backgroundColor = [UIColor colorWithWhite:0.35 alpha:0.82];
+        }
+        [xlPauseButton setTitle:(xlUserPaused ? @"继续" : @"暂停")
+                       forState:UIControlStateNormal];
+        [xlPauseButton setTitleColor:(xlUserPaused
+            ? [UIColor colorWithRed:0.20 green:0.84 blue:0.38 alpha:1.0]
+            : [UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0])
                        forState:UIControlStateNormal];
     }
 }
@@ -436,8 +446,8 @@ static void XLInstallStatusOverlay(void) {
 
     UIButton *pauseButton = [UIButton buttonWithType:UIButtonTypeCustom];
     pauseButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [pauseButton setTitle:@"停" forState:UIControlStateNormal];
-    [pauseButton setTitleColor:[UIColor colorWithRed:0.20 green:0.84 blue:0.38 alpha:1.0]
+    [pauseButton setTitle:@"暂停" forState:UIControlStateNormal];
+    [pauseButton setTitleColor:[UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0]
                       forState:UIControlStateNormal];
     pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
     [pauseButton addTarget:controller
