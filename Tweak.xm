@@ -465,11 +465,11 @@ static void XLInstallStatusOverlay(void) {
     UIButton *status = [UIButton buttonWithType:UIButtonTypeCustom];
     status.translatesAutoresizingMaskIntoConstraints = NO;
     status.userInteractionEnabled = YES;
-    status.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    status.titleLabel.font = [UIFont boldSystemFontOfSize:20.0];
     [status setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     status.backgroundColor = [UIColor colorWithWhite:0.35 alpha:0.82];
-    status.layer.cornerRadius = 18.0;
-    status.layer.borderWidth = 1.0;
+    status.layer.cornerRadius = 27.0;
+    status.layer.borderWidth = 1.5;
     status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.80].CGColor;
     status.layer.shadowColor = UIColor.blackColor.CGColor;
     status.layer.shadowOpacity = 0.35;
@@ -487,8 +487,8 @@ static void XLInstallStatusOverlay(void) {
     [NSLayoutConstraint activateConstraints:@[
         [status.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:5.0],
         [status.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor constant:54.0],
-        [status.widthAnchor constraintEqualToConstant:36.0],
-        [status.heightAnchor constraintEqualToConstant:36.0],
+        [status.widthAnchor constraintEqualToConstant:54.0],
+        [status.heightAnchor constraintEqualToConstant:54.0],
         [actionPanel.leadingAnchor constraintEqualToAnchor:status.centerXAnchor],
         [actionPanel.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
         panelWidth,

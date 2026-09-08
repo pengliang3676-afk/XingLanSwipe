@@ -1,6 +1,6 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜脚本
-Version: 2.5.9
+Version: 2.5.10
 Architecture: iphoneos-arm64e
 Description: RootHide 正式版。控制中心开关为总开关；左侧小按钮可展开暂停、继续和关闭；翻页 180–300 秒，8% 概率下滑；0.20–0.65 秒自然 HID 手势；返回识别 420–720 秒。
 Maintainer: XingLan
