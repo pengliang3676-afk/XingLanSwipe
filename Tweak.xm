@@ -25,6 +25,7 @@ static dispatch_queue_t xlImageMatchQueue;
 static XLHIDSender *xlSender;
 static BOOL xlControlEnabled = NO;
 static BOOL xlRunning = NO;
+static BOOL xlUserPaused = NO;
 static BOOL xlActionBusy = NO;
 static BOOL xlDeviceLocked = NO;
 static int xlLockStateToken = 0;
@@ -32,39 +33,108 @@ static NSUInteger xlRunGeneration = 0;
 static CFAbsoluteTime xlLastGestureEndTime = 0.0;
 static CFAbsoluteTime xlNextBackCheckTime = 0.0;
 static UIWindow *xlStatusWindow;
-static UILabel *xlHomeStatusLabel;
+static UIView *xlOverlayRootView;
+static UIButton *xlHomeStatusButton;
+static UIView *xlActionPanel;
+static UIButton *xlPauseButton;
+static NSLayoutConstraint *xlActionPanelWidthConstraint;
+static BOOL xlActionMenuExpanded = NO;
+
+static void XLSetRunning(BOOL running);
+static void XLSetActionMenuExpanded(BOOL expanded, BOOL animated);
+static void XLHandleStatusButtonTap(void);
+static void XLHandlePauseButtonTap(void);
+static void XLHandleCloseButtonTap(void);
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
 
 @implementation XLStatusOverlayWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    (void)point; (void)event;
-    return nil;
+    UIView *hitView = [super hitTest:point withEvent:event];
+    if (hitView == self || hitView == self.rootViewController.view) return nil;
+    return hitView;
 }
 @end
 
+@interface XLStatusOverlayController : UIViewController
+@end
+
+@implementation XLStatusOverlayController
+- (void)xlStatusTapped {
+    XLHandleStatusButtonTap();
+}
+
+- (void)xlPauseTapped {
+    XLHandlePauseButtonTap();
+}
+
+- (void)xlCloseTapped {
+    XLHandleCloseButtonTap();
+}
+@end
+
+static void XLSetActionMenuExpanded(BOOL expanded, BOOL animated) {
+    if (!xlActionPanel || !xlActionPanelWidthConstraint || !xlOverlayRootView) return;
+    if (!xlControlEnabled) expanded = NO;
+
+    xlActionMenuExpanded = expanded;
+    if (expanded) {
+        xlActionPanel.hidden = NO;
+        xlActionPanel.userInteractionEnabled = YES;
+    }
+
+    xlActionPanelWidthConstraint.constant = expanded ? 118.0 : 18.0;
+    void (^changes)(void) = ^{
+        xlActionPanel.alpha = expanded ? 1.0 : 0.0;
+        [xlOverlayRootView layoutIfNeeded];
+    };
+    void (^completion)(BOOL) = ^(BOOL finished) {
+        (void)finished;
+        if (!xlActionMenuExpanded) {
+            xlActionPanel.hidden = YES;
+            xlActionPanel.userInteractionEnabled = NO;
+        }
+    };
+
+    if (animated) {
+        [UIView animateWithDuration:0.18
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseInOut |
+                                    UIViewAnimationOptionBeginFromCurrentState
+                         animations:changes
+                         completion:completion];
+    } else {
+        changes();
+        completion(YES);
+    }
+}
+
 static void XLUpdateUI(void) {
-    UILabel *status = xlHomeStatusLabel;
+    UIButton *status = xlHomeStatusButton;
     if (status) {
         if (!xlControlEnabled) {
+            XLSetActionMenuExpanded(NO, NO);
             status.hidden = YES;
             return;
         }
         status.hidden = NO;
-        status.text = xlRunning ? @"开" : @"关";
+        NSString *statusText = xlUserPaused ? @"停" : (xlRunning ? @"开" : @"关");
+        [status setTitle:statusText forState:UIControlStateNormal];
         status.backgroundColor = xlRunning
             ? [UIColor colorWithRed:0.90 green:0.12 blue:0.16 alpha:0.90]
             : [UIColor colorWithWhite:0.35 alpha:0.82];
+        [xlPauseButton setTitle:(xlUserPaused ? @"继续" : @"暂停")
+                       forState:UIControlStateNormal];
     }
 }
 
 static void XLShowStatusText(NSString *text, NSTimeInterval duration) {
-    UILabel *status = xlHomeStatusLabel;
+    UIButton *status = xlHomeStatusButton;
     if (!status || !xlRunning) return;
 
     status.hidden = NO;
-    status.text = text;
+    [status setTitle:text forState:UIControlStateNormal];
     NSUInteger generation = xlRunGeneration;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(duration * NSEC_PER_SEC)),
@@ -133,6 +203,13 @@ static BOOL XLReadRunningPreference(void) {
     BOOL running = value && CFEqual(value, kCFBooleanTrue);
     if (value) CFRelease(value);
     return running;
+}
+
+static void XLWriteRunningPreference(BOOL running) {
+    CFPreferencesSetAppValue(CFSTR(XLRunningPreferenceKey),
+        running ? kCFBooleanTrue : kCFBooleanFalse,
+        CFSTR(XLPreferenceDomain));
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
 }
 
 static double XLRandomCoordinate(double minimum, double maximum) {
@@ -284,6 +361,30 @@ static void XLSetRunning(BOOL running) {
     XLUpdateUI();
 }
 
+static void XLHandleStatusButtonTap(void) {
+    if (!xlControlEnabled) return;
+    XLSetActionMenuExpanded(!xlActionMenuExpanded, YES);
+}
+
+static void XLHandlePauseButtonTap(void) {
+    if (!xlControlEnabled) return;
+    xlUserPaused = !xlUserPaused;
+    XLSetRunning(xlControlEnabled && !xlUserPaused && !xlDeviceLocked);
+    XLSetActionMenuExpanded(NO, YES);
+}
+
+static void XLHandleCloseButtonTap(void) {
+    if (!xlControlEnabled) return;
+    xlUserPaused = NO;
+    xlControlEnabled = NO;
+    XLWriteRunningPreference(NO);
+    XLSetRunning(NO);
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR(XLControlCenterStateNotification),
+        NULL, NULL, YES);
+}
+
 static void XLInstallStatusOverlay(void) {
     if (xlStatusWindow) {
         XLUpdateUI();
@@ -313,39 +414,104 @@ static void XLInstallStatusOverlay(void) {
     }
     window.windowLevel = UIWindowLevelAlert + 1000.0;
     window.backgroundColor = UIColor.clearColor;
-    window.userInteractionEnabled = NO;
+    window.userInteractionEnabled = YES;
 
-    UIViewController *controller = [UIViewController new];
+    XLStatusOverlayController *controller = [XLStatusOverlayController new];
     controller.view.backgroundColor = UIColor.clearColor;
-    controller.view.userInteractionEnabled = NO;
+    controller.view.userInteractionEnabled = YES;
     window.rootViewController = controller;
 
-    UILabel *status = [UILabel new];
+    UIView *actionPanel = [UIView new];
+    actionPanel.translatesAutoresizingMaskIntoConstraints = NO;
+    actionPanel.backgroundColor = [UIColor colorWithWhite:0.24 alpha:0.91];
+    actionPanel.layer.cornerRadius = 17.0;
+    actionPanel.layer.shadowColor = UIColor.blackColor.CGColor;
+    actionPanel.layer.shadowOpacity = 0.28;
+    actionPanel.layer.shadowRadius = 4.0;
+    actionPanel.layer.shadowOffset = CGSizeZero;
+    actionPanel.clipsToBounds = YES;
+    actionPanel.hidden = YES;
+    actionPanel.alpha = 0.0;
+    actionPanel.userInteractionEnabled = NO;
+
+    UIButton *pauseButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    pauseButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [pauseButton setTitle:@"暂停" forState:UIControlStateNormal];
+    [pauseButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    [pauseButton addTarget:controller
+                    action:@selector(xlPauseTapped)
+          forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    closeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [closeButton setTitle:@"关闭" forState:UIControlStateNormal];
+    [closeButton setTitleColor:[UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0]
+                      forState:UIControlStateNormal];
+    closeButton.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    [closeButton addTarget:controller
+                    action:@selector(xlCloseTapped)
+          forControlEvents:UIControlEventTouchUpInside];
+
+    UIView *separator = [UIView new];
+    separator.translatesAutoresizingMaskIntoConstraints = NO;
+    separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
+
+    [actionPanel addSubview:pauseButton];
+    [actionPanel addSubview:separator];
+    [actionPanel addSubview:closeButton];
+    [controller.view addSubview:actionPanel];
+
+    UIButton *status = [UIButton buttonWithType:UIButtonTypeCustom];
     status.translatesAutoresizingMaskIntoConstraints = NO;
-    status.userInteractionEnabled = NO;
-    status.textAlignment = NSTextAlignmentCenter;
-    status.font = [UIFont boldSystemFontOfSize:20.0];
-    status.textColor = UIColor.whiteColor;
+    status.userInteractionEnabled = YES;
+    status.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    [status setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     status.backgroundColor = [UIColor colorWithWhite:0.35 alpha:0.82];
-    status.layer.cornerRadius = 27.0;
-    status.layer.borderWidth = 1.5;
+    status.layer.cornerRadius = 18.0;
+    status.layer.borderWidth = 1.0;
     status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.80].CGColor;
     status.layer.shadowColor = UIColor.blackColor.CGColor;
     status.layer.shadowOpacity = 0.35;
     status.layer.shadowRadius = 4.0;
     status.layer.shadowOffset = CGSizeZero;
     status.clipsToBounds = YES;
+    [status addTarget:controller
+               action:@selector(xlStatusTapped)
+     forControlEvents:UIControlEventTouchUpInside];
     [controller.view addSubview:status];
 
     UILayoutGuide *safeArea = controller.view.safeAreaLayoutGuide;
+    NSLayoutConstraint *panelWidth =
+        [actionPanel.widthAnchor constraintEqualToConstant:18.0];
     [NSLayoutConstraint activateConstraints:@[
         [status.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:5.0],
-        [status.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor],
-        [status.widthAnchor constraintEqualToConstant:54.0],
-        [status.heightAnchor constraintEqualToConstant:54.0],
+        [status.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor constant:54.0],
+        [status.widthAnchor constraintEqualToConstant:36.0],
+        [status.heightAnchor constraintEqualToConstant:36.0],
+        [actionPanel.leadingAnchor constraintEqualToAnchor:status.centerXAnchor],
+        [actionPanel.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
+        panelWidth,
+        [actionPanel.heightAnchor constraintEqualToConstant:34.0],
+        [pauseButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:18.0],
+        [pauseButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
+        [pauseButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
+        [pauseButton.widthAnchor constraintEqualToConstant:50.0],
+        [separator.leadingAnchor constraintEqualToAnchor:pauseButton.trailingAnchor],
+        [separator.centerYAnchor constraintEqualToAnchor:actionPanel.centerYAnchor],
+        [separator.widthAnchor constraintEqualToConstant:1.0],
+        [separator.heightAnchor constraintEqualToConstant:20.0],
+        [closeButton.leadingAnchor constraintEqualToAnchor:separator.trailingAnchor],
+        [closeButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
+        [closeButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
+        [closeButton.widthAnchor constraintEqualToConstant:49.0],
     ]];
     xlStatusWindow = window;
-    xlHomeStatusLabel = status;
+    xlOverlayRootView = controller.view;
+    xlHomeStatusButton = status;
+    xlActionPanel = actionPanel;
+    xlPauseButton = pauseButton;
+    xlActionPanelWidthConstraint = panelWidth;
     window.hidden = NO;
     XLUpdateUI();
 }
@@ -359,7 +525,7 @@ static void XLRegisterLockStateObserver(void) {
             uint64_t state = 0;
             if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) return;
             xlDeviceLocked = state != 0;
-            XLSetRunning(xlControlEnabled && !xlDeviceLocked);
+            XLSetRunning(xlControlEnabled && !xlUserPaused && !xlDeviceLocked);
         });
     if (status != NOTIFY_STATUS_OK) {
         xlLockStateToken = 0;
@@ -380,6 +546,7 @@ static void XLControlCenterStateCallback(CFNotificationCenterRef center, void *o
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     BOOL requestedRunning = XLReadRunningPreference();
     dispatch_async(dispatch_get_main_queue(), ^{
+        xlUserPaused = NO;
         xlControlEnabled = requestedRunning;
         XLSetRunning(requestedRunning && !xlDeviceLocked);
     });
@@ -399,7 +566,7 @@ static void XingLanSwipeInit(void) {
                 xlControlEnabled = XLReadRunningPreference();
                 XLRegisterLockStateObserver();
                 XLInstallStatusOverlay();
-                XLSetRunning(xlControlEnabled && !xlDeviceLocked);
+                XLSetRunning(xlControlEnabled && !xlUserPaused && !xlDeviceLocked);
                 CFNotificationCenterAddObserver(
                     CFNotificationCenterGetDarwinNotifyCenter(),
                     NULL, XLControlCenterStateCallback,
