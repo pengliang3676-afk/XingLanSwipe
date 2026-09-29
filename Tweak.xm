@@ -18,8 +18,29 @@ static const double XLBackTapMinimumY = 0.942;
 static const double XLBackTapMaximumY = 0.982;
 static const double XLBackChevronThreshold = 0.65;
 
+// Right-edge tap mode. Points are normalized to the SE2 portrait screen and
+// sit roughly 8pt inside the right edge, well clear of the status bar (y<0.15)
+// and the bottom area (y>0.92).
+static const uint32_t XLEdgeClickMinimumDelay = 10;
+static const uint32_t XLEdgeClickMaximumDelay = 15;
+static const double XLEdgeClickBaseX = 0.979;
+static const double XLEdgeClickXJitter = 0.006;
+static const double XLEdgeClickYJitter = 0.010;
+static const double XLEdgeClickMinimumX = 0.930;
+static const double XLEdgeClickMaximumX = 0.998;
+static const double XLEdgeClickMinimumY = 0.150;
+static const double XLEdgeClickMaximumY = 0.900;
+static const double XLEdgeClickYPoints[] = {0.18, 0.32, 0.46, 0.60, 0.74, 0.88};
+
+typedef NS_ENUM(NSInteger, XLMode) {
+    XLModeSwipe = XLModeSwipeValue,
+    XLModeClick = XLModeClickValue
+};
+
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
+static dispatch_source_t xlClickTimer;
+static XLMode xlMode = XLModeSwipe;
 static XLBackIconDetector *xlBackIconDetector;
 static dispatch_queue_t xlImageMatchQueue;
 static XLHIDSender *xlSender;
@@ -37,6 +58,8 @@ static UIView *xlOverlayRootView;
 static UIButton *xlHomeStatusButton;
 static UIView *xlActionPanel;
 static UIButton *xlPauseButton;
+static UIButton *xlModeSwipeButton;
+static UIButton *xlModeClickButton;
 static NSLayoutConstraint *xlActionPanelWidthConstraint;
 static BOOL xlActionMenuExpanded = NO;
 
@@ -45,6 +68,8 @@ static void XLSetActionMenuExpanded(BOOL expanded, BOOL animated);
 static void XLHandleStatusButtonTap(void);
 static void XLHandlePauseButtonTap(void);
 static void XLHandleCloseButtonTap(void);
+static void XLHandleModeSwipeTap(void);
+static void XLHandleModeClickTap(void);
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -71,6 +96,14 @@ static void XLHandleCloseButtonTap(void);
 
 - (void)xlCloseTapped {
     XLHandleCloseButtonTap();
+}
+
+- (void)xlModeSwipeTapped {
+    XLHandleModeSwipeTap();
+}
+
+- (void)xlModeClickTapped {
+    XLHandleModeClickTap();
 }
 @end
 
@@ -136,6 +169,20 @@ static void XLUpdateUI(void) {
             ? [UIColor colorWithRed:0.20 green:0.84 blue:0.38 alpha:1.0]
             : [UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0])
                        forState:UIControlStateNormal];
+
+        if (xlModeSwipeButton && xlModeClickButton) {
+            BOOL swipeActive = (xlMode == XLModeSwipe);
+            UIColor *activeColor = UIColor.whiteColor;
+            UIColor *inactiveColor = [UIColor colorWithWhite:1.0 alpha:0.42];
+            [xlModeSwipeButton setTitleColor:(swipeActive ? activeColor : inactiveColor)
+                                    forState:UIControlStateNormal];
+            [xlModeClickButton setTitleColor:(swipeActive ? inactiveColor : activeColor)
+                                    forState:UIControlStateNormal];
+            xlModeSwipeButton.backgroundColor =
+                swipeActive ? [UIColor colorWithWhite:1.0 alpha:0.18] : UIColor.clearColor;
+            xlModeClickButton.backgroundColor =
+                swipeActive ? UIColor.clearColor : [UIColor colorWithWhite:1.0 alpha:0.18];
+        }
     }
 }
 
@@ -173,6 +220,10 @@ static void XLScheduleSwipeAfterDelay(uint32_t delay);
 static void XLScheduleNextBackSwipe(void);
 static void XLScheduleBackSwipeAfterDelay(uint32_t delay);
 static void XLPerformBackSwipe(void);
+static void XLCancelClickTimer(void);
+static void XLScheduleClickAfterDelay(uint32_t delay);
+static void XLScheduleNextClick(void);
+static void XLPerformEdgeClick(void);
 
 static BOOL XLGestureCooldownIsActive(void) {
     if (xlLastGestureEndTime <= 0.0) return NO;
@@ -349,6 +400,114 @@ static void XLScheduleNextBackSwipe(void) {
     XLScheduleBackSwipeAfterDelay(delay);
 }
 
+static void XLCancelClickTimer(void) {
+    if (xlClickTimer) {
+        dispatch_source_cancel(xlClickTimer);
+        xlClickTimer = nil;
+    }
+}
+
+static void XLScheduleClickAfterDelay(uint32_t delay) {
+    XLCancelClickTimer();
+    if (!xlRunning || xlMode != XLModeClick) return;
+    NSLog(@"[XingLanSwipe] next edge click in %u seconds", delay);
+    xlClickTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+        dispatch_get_main_queue());
+    dispatch_source_set_timer(xlClickTimer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
+        DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
+    dispatch_source_set_event_handler(xlClickTimer, ^{ XLPerformEdgeClick(); });
+    dispatch_resume(xlClickTimer);
+}
+
+static void XLScheduleNextClick(void) {
+    uint32_t delay = XLEdgeClickMinimumDelay +
+        arc4random_uniform(XLEdgeClickMaximumDelay - XLEdgeClickMinimumDelay + 1);
+    XLScheduleClickAfterDelay(delay);
+}
+
+static void XLPerformEdgeClick(void) {
+    XLCancelClickTimer();
+    if (!xlRunning || xlMode != XLModeClick) return;
+    if (xlActionBusy || XLGestureCooldownIsActive()) {
+        NSLog(@"[XingLanSwipe] edge click deferred to avoid action conflict");
+        XLScheduleClickAfterDelay(XLConflictRetryDelay);
+        return;
+    }
+    xlActionBusy = YES;
+    NSUInteger generation = xlRunGeneration;
+
+    NSUInteger pointCount = sizeof(XLEdgeClickYPoints) / sizeof(XLEdgeClickYPoints[0]);
+    NSUInteger pointIndex = pointCount > 0 ? arc4random_uniform((uint32_t)pointCount) : 0;
+    double x = MIN(MAX(XLEdgeClickBaseX +
+        XLRandomCoordinate(-XLEdgeClickXJitter, XLEdgeClickXJitter),
+        XLEdgeClickMinimumX), XLEdgeClickMaximumX);
+    double y = MIN(MAX(XLEdgeClickYPoints[pointIndex] +
+        XLRandomCoordinate(-XLEdgeClickYJitter, XLEdgeClickYJitter),
+        XLEdgeClickMinimumY), XLEdgeClickMaximumY);
+
+    if (!xlSender) xlSender = [XLHIDSender new];
+    NSLog(@"[XingLanSwipe] edge click point %lu at %.4fx%.4f",
+          (unsigned long)pointIndex, x, y);
+    [xlSender performTapAtNormalizedX:x y:y completion:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != xlRunGeneration) return;
+            xlActionBusy = NO;
+            if (success) xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+            XLShowStatusText(success ? @"点" : @"点×", 2.0);
+            NSLog(@"[XingLanSwipe] edge click %@", success ? @"success" : @"failed");
+            if (xlRunning) XLScheduleNextClick();
+        });
+    }];
+}
+
+static XLMode XLReadModePreference(void) {
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+    CFPropertyListRef value = CFPreferencesCopyAppValue(
+        CFSTR(XLModePreferenceKey), CFSTR(XLPreferenceDomain));
+    XLMode mode = XLModeSwipe;
+    if (value) {
+        if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+            CFIndex number = 0;
+            if (CFNumberGetValue((CFNumberRef)value, kCFNumberCFIndexType, &number) &&
+                number == XLModeClick) {
+                mode = XLModeClick;
+            }
+        }
+        CFRelease(value);
+    }
+    return mode;
+}
+
+static void XLWriteModePreference(XLMode mode) {
+    CFIndex number = (CFIndex)mode;
+    CFNumberRef value = CFNumberCreate(kCFAllocatorDefault,
+                                       kCFNumberCFIndexType, &number);
+    CFPreferencesSetAppValue(CFSTR(XLModePreferenceKey), value,
+                             CFSTR(XLPreferenceDomain));
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+    if (value) CFRelease(value);
+}
+
+static void XLSetMode(XLMode mode) {
+    if (!xlControlEnabled) return;
+    if (xlMode == mode) {
+        XLUpdateUI();
+        return;
+    }
+    xlMode = mode;
+    XLWriteModePreference(mode);
+    NSLog(@"[XingLanSwipe] mode set to %@",
+          mode == XLModeClick ? @"click" : @"swipe");
+    // Swipe and click never run together: drop the old mode's timers and
+    // reschedule from scratch for the new one.
+    if (xlRunning) {
+        XLSetRunning(NO);
+        XLSetRunning(YES);
+    }
+    XLUpdateUI();
+}
+
 static void XLSetRunning(BOOL running) {
     if (xlRunning == running) {
         XLUpdateUI();
@@ -358,12 +517,18 @@ static void XLSetRunning(BOOL running) {
     xlRunning = running;
     xlRunGeneration++;
     if (xlRunning) {
-        XLScheduleNext();
-        XLScheduleNextBackSwipe();
-        NSLog(@"[XingLanSwipe] started");
+        if (xlMode == XLModeClick) {
+            XLScheduleNextClick();
+        } else {
+            XLScheduleNext();
+            XLScheduleNextBackSwipe();
+        }
+        NSLog(@"[XingLanSwipe] started in %@ mode",
+              xlMode == XLModeClick ? @"click" : @"swipe");
     } else {
         XLCancelTimer();
         XLCancelBackTimer();
+        XLCancelClickTimer();
         xlActionBusy = NO;
         xlLastGestureEndTime = 0.0;
         NSLog(@"[XingLanSwipe] stopped");
@@ -393,6 +558,14 @@ static void XLHandleCloseButtonTap(void) {
         CFNotificationCenterGetDarwinNotifyCenter(),
         CFSTR(XLControlCenterStateNotification),
         NULL, NULL, YES);
+}
+
+static void XLHandleModeSwipeTap(void) {
+    XLSetMode(XLModeSwipe);
+}
+
+static void XLHandleModeClickTap(void) {
+    XLSetMode(XLModeClick);
 }
 
 static void XLInstallStatusOverlay(void) {
@@ -468,9 +641,39 @@ static void XLInstallStatusOverlay(void) {
     separator.translatesAutoresizingMaskIntoConstraints = NO;
     separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
 
+    UIView *modeSeparator = [UIView new];
+    modeSeparator.translatesAutoresizingMaskIntoConstraints = NO;
+    modeSeparator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
+
+    UIView *rowDivider = [UIView new];
+    rowDivider.translatesAutoresizingMaskIntoConstraints = NO;
+    rowDivider.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
+
+    UIButton *modeSwipeButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    modeSwipeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [modeSwipeButton setTitle:@"滑动" forState:UIControlStateNormal];
+    [modeSwipeButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    modeSwipeButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
+    [modeSwipeButton addTarget:controller
+                        action:@selector(xlModeSwipeTapped)
+              forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *modeClickButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    modeClickButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [modeClickButton setTitle:@"点击" forState:UIControlStateNormal];
+    [modeClickButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    modeClickButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
+    [modeClickButton addTarget:controller
+                        action:@selector(xlModeClickTapped)
+              forControlEvents:UIControlEventTouchUpInside];
+
+    [actionPanel addSubview:modeSwipeButton];
+    [actionPanel addSubview:modeSeparator];
+    [actionPanel addSubview:modeClickButton];
     [actionPanel addSubview:pauseButton];
     [actionPanel addSubview:separator];
     [actionPanel addSubview:closeButton];
+    [actionPanel addSubview:rowDivider];
     [controller.view addSubview:actionPanel];
 
     UIButton *status = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -503,18 +706,38 @@ static void XLInstallStatusOverlay(void) {
         [actionPanel.leadingAnchor constraintEqualToAnchor:status.centerXAnchor],
         [actionPanel.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
         panelWidth,
-        [actionPanel.heightAnchor constraintEqualToConstant:51.0],
+        [actionPanel.heightAnchor constraintEqualToConstant:102.0],
+
+        // Row 1: swipe / click mode selection.
+        [modeSwipeButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
+        [modeSwipeButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
+        [modeSwipeButton.widthAnchor constraintEqualToConstant:75.0],
+        [modeSwipeButton.heightAnchor constraintEqualToConstant:51.0],
+        [modeSeparator.leadingAnchor constraintEqualToAnchor:modeSwipeButton.trailingAnchor],
+        [modeSeparator.centerYAnchor constraintEqualToAnchor:modeSwipeButton.centerYAnchor],
+        [modeSeparator.widthAnchor constraintEqualToConstant:1.5],
+        [modeSeparator.heightAnchor constraintEqualToConstant:30.0],
+        [modeClickButton.leadingAnchor constraintEqualToAnchor:modeSeparator.trailingAnchor],
+        [modeClickButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
+        [modeClickButton.heightAnchor constraintEqualToConstant:51.0],
+        [modeClickButton.widthAnchor constraintEqualToConstant:73.5],
+        [rowDivider.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
+        [rowDivider.topAnchor constraintEqualToAnchor:actionPanel.topAnchor constant:50.25],
+        [rowDivider.widthAnchor constraintEqualToConstant:150.0],
+        [rowDivider.heightAnchor constraintEqualToConstant:1.5],
+
+        // Row 2: pause / close.
         [pauseButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
-        [pauseButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
         [pauseButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
         [pauseButton.widthAnchor constraintEqualToConstant:75.0],
+        [pauseButton.heightAnchor constraintEqualToConstant:51.0],
         [separator.leadingAnchor constraintEqualToAnchor:pauseButton.trailingAnchor],
-        [separator.centerYAnchor constraintEqualToAnchor:actionPanel.centerYAnchor],
+        [separator.centerYAnchor constraintEqualToAnchor:pauseButton.centerYAnchor],
         [separator.widthAnchor constraintEqualToConstant:1.5],
         [separator.heightAnchor constraintEqualToConstant:30.0],
         [closeButton.leadingAnchor constraintEqualToAnchor:separator.trailingAnchor],
-        [closeButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
         [closeButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
+        [closeButton.heightAnchor constraintEqualToConstant:51.0],
         [closeButton.widthAnchor constraintEqualToConstant:73.5],
     ]];
     xlStatusWindow = window;
@@ -522,6 +745,8 @@ static void XLInstallStatusOverlay(void) {
     xlHomeStatusButton = status;
     xlActionPanel = actionPanel;
     xlPauseButton = pauseButton;
+    xlModeSwipeButton = modeSwipeButton;
+    xlModeClickButton = modeClickButton;
     xlActionPanelWidthConstraint = panelWidth;
     window.hidden = NO;
     XLUpdateUI();
@@ -575,6 +800,7 @@ static void XingLanSwipeInit(void) {
                     "com.jibeib.xinglanswipe.cropped-image-match",
                     DISPATCH_QUEUE_SERIAL);
                 xlControlEnabled = XLReadRunningPreference();
+                xlMode = XLReadModePreference();
                 XLRegisterLockStateObserver();
                 XLInstallStatusOverlay();
                 XLSetRunning(xlControlEnabled && !xlUserPaused && !xlDeviceLocked);
