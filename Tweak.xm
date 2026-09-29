@@ -27,7 +27,7 @@ static const double XLEdgeClickBaseX = 0.979;
 static const double XLEdgeClickXJitter = 0.006;
 static const double XLEdgeClickYJitter = 0.010;
 static const double XLEdgeClickMinimumX = 0.930;
-static const double XLEdgeClickMaximumX = 0.998;
+static const double XLEdgeClickMaximumX = 0.990;
 static const double XLEdgeClickMinimumY = 0.150;
 static const double XLEdgeClickMaximumY = 0.900;
 static const double XLEdgeClickYPoints[] = {0.18, 0.32, 0.46, 0.60, 0.74, 0.88};
@@ -453,8 +453,13 @@ static void XLPerformEdgeClick(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != xlRunGeneration) return;
             xlActionBusy = NO;
-            if (success) xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
-            XLShowStatusText(success ? @"点" : @"点×", 2.0);
+            if (success) {
+                xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
+            } else {
+                // Keep the status fixed on "开" for successful taps; only a
+                // failure is surfaced so a broken HID path stays visible.
+                XLShowStatusText(@"点×", 2.0);
+            }
             NSLog(@"[XingLanSwipe] edge click %@", success ? @"success" : @"failed");
             if (xlRunning) XLScheduleNextClick();
         });
