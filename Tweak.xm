@@ -525,8 +525,10 @@ static NSString *XLNovelIntervalText(void) {
         }
         CFRelease(value);
     }
-    if (text.length == 0 ||
-        ![XLParseNovelInterval(text, NULL, NULL)]) {
+    // Kept as a named BOOL: "[func(args)]" inside a condition is read as a C++
+    // lambda capture in the Objective-C++ translation unit.
+    BOOL usable = (text.length > 0) && XLParseNovelInterval(text, NULL, NULL);
+    if (!usable) {
         text = @XLNovelIntervalDefault;
     }
     return text;
@@ -546,8 +548,7 @@ static BOOL XLParseNovelInterval(NSString *text, uint32_t *minimum, uint32_t *ma
     NSArray<NSString *> *parts = [normalized componentsSeparatedByString:@"-"];
     if (parts.count == 0 || parts.count > 2) return NO;
 
-    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
-    NSCharacterSet *nonDigits = digits.invertedCharacterSet;
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
     uint32_t lower = 0, upper = 0;
     for (NSUInteger index = 0; index < parts.count; index++) {
         NSString *part = parts[index];
@@ -706,7 +707,9 @@ static void XLPresentIntervalAlert(UIWindow *host, NSString *initialText) {
                                             handler:^(UIAlertAction *action) {
         (void)action;
         NSString *typed = weakAlert.textFields.firstObject.text;
-        if ([XLApplyNovelInterval(typed)]) {
+        // Named BOOL avoids the "[func(args)]" lambda-capture parse in ObjC++.
+        BOOL applied = XLApplyNovelInterval(typed);
+        if (applied) {
             XLTearDownIntervalEditorWindow();
             return;
         }
