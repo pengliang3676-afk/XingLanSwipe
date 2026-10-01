@@ -27,12 +27,13 @@ static const uint32_t XLNovelMaximumDelay = 11;
 static const CGFloat XLStatusButtonSize = 54.0;
 static const CGFloat XLStatusButtonLeading = 5.0;
 static const CGFloat XLStatusButtonCenterOffset = 54.0;
-static const CGFloat XLPanelWidth = 110.0;
+static const CGFloat XLPanelWidth = 100.0;
 static const CGFloat XLPanelRowHeight = 40.0;
 static const CGFloat XLPanelHeight = 160.0;
 static const CGFloat XLPanelCornerRadius = 20.0;
 static const CGFloat XLPanelOverlap = 27.0;
 static const CGFloat XLPanelRowInset = 3.0;
+static const CGFloat XLPanelTitleFontSize = 17.0;
 
 typedef NS_ENUM(NSInteger, XLMode) {
     XLModeSwipe = XLModeSwipeValue,
@@ -626,7 +627,8 @@ static void XLInstallStatusOverlay(void) {
     modeSwipeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [modeSwipeButton setTitle:@"视频" forState:UIControlStateNormal];
     [modeSwipeButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    modeSwipeButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
+    modeSwipeButton.titleLabel.font =
+        [UIFont boldSystemFontOfSize:XLPanelTitleFontSize];
     [modeSwipeButton addTarget:controller
                         action:@selector(xlModeSwipeTapped)
               forControlEvents:UIControlEventTouchUpInside];
@@ -637,7 +639,8 @@ static void XLInstallStatusOverlay(void) {
     modeNovelButton.translatesAutoresizingMaskIntoConstraints = NO;
     [modeNovelButton setTitle:@"小说" forState:UIControlStateNormal];
     [modeNovelButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    modeNovelButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
+    modeNovelButton.titleLabel.font =
+        [UIFont boldSystemFontOfSize:XLPanelTitleFontSize];
     [modeNovelButton addTarget:controller
                         action:@selector(xlModeNovelTapped)
               forControlEvents:UIControlEventTouchUpInside];
@@ -648,7 +651,8 @@ static void XLInstallStatusOverlay(void) {
     pauseButton.translatesAutoresizingMaskIntoConstraints = NO;
     [pauseButton setTitle:@"暂停" forState:UIControlStateNormal];
     [pauseButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
+    pauseButton.titleLabel.font =
+        [UIFont boldSystemFontOfSize:XLPanelTitleFontSize];
     [pauseButton addTarget:controller
                     action:@selector(xlPauseTapped)
           forControlEvents:UIControlEventTouchUpInside];
@@ -657,7 +661,8 @@ static void XLInstallStatusOverlay(void) {
     closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [closeButton setTitle:@"关闭" forState:UIControlStateNormal];
     [closeButton setTitleColor:actionColor forState:UIControlStateNormal];
-    closeButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
+    closeButton.titleLabel.font =
+        [UIFont boldSystemFontOfSize:XLPanelTitleFontSize];
     [closeButton addTarget:controller
                     action:@selector(xlCloseTapped)
           forControlEvents:UIControlEventTouchUpInside];
