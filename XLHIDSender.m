@@ -125,16 +125,19 @@ static double XLRandom(double minimum, double maximum) {
         (maximum - minimum);
 }
 
-// Vertical anchors for the page turn, read off the screenshot the user marked
-// up. One is picked per swipe so the gesture does not keep repeating the same
-// line, and the end point drifts slightly off the start point the way a real
-// finger does.
+// Vertical anchors for the page turn. One is picked per swipe so the gesture
+// does not keep repeating the same line, and the end point drifts slightly off
+// the start point the way a real finger does.
+//
+// The reading page puts body text between roughly 0.08 and 0.82, a status strip
+// at 0.82-0.89 and the ad card from 0.90 down. The anchors stay in the text
+// band with room for the drift below, so the path never crosses the ad.
 static const double XLPageTurnYAnchors[] = {
-    0.164, 0.263, 0.355, 0.428, 0.530, 0.613, 0.717, 0.764,
+    0.160, 0.232, 0.304, 0.376, 0.448, 0.520, 0.592, 0.660,
 };
-static const double XLPageTurnYJitter = 0.012;
-static const double XLPageTurnMinimumY = 0.10;
-static const double XLPageTurnMaximumY = 0.84;
+static const double XLPageTurnYJitter = 0.010;
+static const double XLPageTurnMinimumY = 0.120;
+static const double XLPageTurnMaximumY = 0.700;
 
 - (void)performTapAtNormalizedX:(double)x
                               y:(double)y
@@ -250,13 +253,15 @@ static const double XLPageTurnMaximumY = 0.84;
         double tremorAmplitude = XLRandom(0.0016, 0.0034);
         double tremorPhase = XLRandom(0.0, 6.2831853);
         double tremorRate = XLRandom(2.2, 4.6);
-        // Kept well under the ~0.5s long press threshold so the finger passing
-        // over an ad never registers as a hold.
-        double totalDuration = XLRandom(0.16, 0.32);
-        double pressHold = XLRandom(0.018, 0.030);
-        double releaseHold = XLRandom(0.008, 0.014);
+        // Fast flick, not a slow drag. A smoothstep profile barely moves for the
+        // first tens of milliseconds, which leaves the finger sitting on the ad
+        // long enough for its gesture recogniser to claim the touch. An ease-out
+        // profile puts real distance under the finger immediately.
+        double totalDuration = XLRandom(0.10, 0.20);
+        double pressHold = XLRandom(0.006, 0.012);
+        double releaseHold = XLRandom(0.005, 0.009);
         double moveDuration = totalDuration - pressHold - releaseHold;
-        NSInteger steps = 20 + (NSInteger)arc4random_uniform(9);
+        NSInteger steps = 16 + (NSInteger)arc4random_uniform(7);
         double timingWeights[32];
         double timingWeightTotal = 0.0;
         for (NSInteger i = 0; i < steps; i++) {
@@ -269,9 +274,9 @@ static const double XLPageTurnMaximumY = 0.84;
         // stays clear of the long press threshold.
         NSInteger microPauseStep = -1;
         double microPauseSeconds = 0.0;
-        if (steps > 8 && arc4random_uniform(100) < 25) {
+        if (steps > 8 && arc4random_uniform(100) < 20) {
             microPauseStep = 4 + (NSInteger)arc4random_uniform((uint32_t)(steps - 8));
-            microPauseSeconds = XLRandom(0.012, 0.028);
+            microPauseSeconds = XLRandom(0.008, 0.018);
         }
 
         NSLog(@"[XingLanSwipe] page turn anchor %lu y %.3f->%.3f x %.3f->%.3f dur %.2fs%@",
@@ -283,7 +288,10 @@ static const double XLPageTurnMaximumY = 0.84;
 
         for (NSInteger i = 1; success && i <= steps; i++) {
             double t = (double)i / (double)steps;
-            double eased = t * t * (3.0 - 2.0 * t);
+            // Ease-out: most of the travel happens early, so the finger is never
+            // near-stationary at the start of the gesture, which is what let the
+            // ad's gesture recogniser claim the touch.
+            double eased = 1.0 - pow(1.0 - t, 2.2);
             double curve = 4.0 * t * (1.0 - t) * controlOffset;
             // Two out-of-phase harmonics read more like hand tremor than a
             // single clean sine. Both are zero at t=0 and t=1.
