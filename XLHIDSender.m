@@ -125,6 +125,17 @@ static double XLRandom(double minimum, double maximum) {
         (maximum - minimum);
 }
 
+// Vertical anchors for the page turn, read off the screenshot the user marked
+// up. One is picked per swipe so the gesture does not keep repeating the same
+// line, and the end point drifts slightly off the start point the way a real
+// finger does.
+static const double XLPageTurnYAnchors[] = {
+    0.164, 0.263, 0.355, 0.428, 0.530, 0.613, 0.717, 0.764,
+};
+static const double XLPageTurnYJitter = 0.012;
+static const double XLPageTurnMinimumY = 0.10;
+static const double XLPageTurnMaximumY = 0.84;
+
 - (void)performTapAtNormalizedX:(double)x
                               y:(double)y
                      completion:(XLHIDCompletion)completion {
@@ -209,9 +220,9 @@ static double XLRandom(double minimum, double maximum) {
 }
 
 // Right-to-left page turn. Uses the same natural curve as the up swipe, with
-// the axes swapped so the bow and wobble offsets ride on Y while X travels
-// across the page. The gesture stays in the central band, clear of the status
-// bar, the bottom edge and the control the back-check taps.
+// the axes swapped so the bow and tremor ride on Y while X travels across the
+// page. Several Y anchors are available and one is chosen per swipe, so the
+// gesture does not land on the same line every time.
 - (void)performNaturalBackwardSwipeWithCompletion:(XLHIDCompletion)completion {
     dispatch_async(_queue, ^{
         if (![self ready]) {
@@ -221,13 +232,25 @@ static double XLRandom(double minimum, double maximum) {
             return;
         }
 
-        double startY = XLRandom(0.46, 0.54);
-        double endY = MIN(MAX(startY + XLRandom(-0.025, 0.025), 0.45), 0.55);
-        double startX = XLRandom(0.82, 0.87);
-        double endX = XLRandom(0.20, 0.27);
-        double controlOffset = XLRandom(-0.018, 0.018);
-        double wobbleAmplitude = XLRandom(-0.0025, 0.0025);
-        double totalDuration = XLRandom(0.20, 0.65);
+        NSUInteger anchorCount =
+            sizeof(XLPageTurnYAnchors) / sizeof(XLPageTurnYAnchors[0]);
+        NSUInteger anchorIndex = arc4random_uniform((uint32_t)anchorCount);
+        double startY = MIN(MAX(XLPageTurnYAnchors[anchorIndex] +
+                                XLRandom(-XLPageTurnYJitter, XLPageTurnYJitter),
+                                XLPageTurnMinimumY),
+                            XLPageTurnMaximumY);
+        // The finger wanders vertically instead of tracking one exact line, so
+        // the end point drifts independently of the start point.
+        double endY = MIN(MAX(startY + XLRandom(-0.030, 0.030),
+                              XLPageTurnMinimumY),
+                          XLPageTurnMaximumY);
+        double startX = XLRandom(0.83, 0.90);
+        double endX = XLRandom(0.16, 0.26);
+        double controlOffset = XLRandom(-0.022, 0.022);
+        double tremorAmplitude = XLRandom(0.0016, 0.0034);
+        double tremorPhase = XLRandom(0.0, 6.2831853);
+        double tremorRate = XLRandom(2.2, 4.6);
+        double totalDuration = XLRandom(0.22, 0.62);
         double pressHold = XLRandom(0.018, 0.030);
         double releaseHold = XLRandom(0.008, 0.014);
         double moveDuration = totalDuration - pressHold - releaseHold;
@@ -239,6 +262,19 @@ static double XLRandom(double minimum, double maximum) {
             timingWeightTotal += timingWeights[i];
         }
 
+        // A real finger does not cross the screen at a constant rate; roughly a
+        // third of swipes hesitate briefly somewhere along the way.
+        NSInteger microPauseStep = -1;
+        double microPauseSeconds = 0.0;
+        if (steps > 8 && arc4random_uniform(100) < 35) {
+            microPauseStep = 4 + (NSInteger)arc4random_uniform((uint32_t)(steps - 8));
+            microPauseSeconds = XLRandom(0.018, 0.050);
+        }
+
+        NSLog(@"[XingLanSwipe] page turn anchor %lu y %.3f->%.3f x %.3f->%.3f dur %.2fs%@",
+              (unsigned long)anchorIndex, startY, endY, startX, endX, totalDuration,
+              microPauseStep >= 0 ? @" (hesitates)" : @"");
+
         BOOL success = [self sendX:startX y:startY phase:XLTouchPhaseDown];
         if (success) usleep((useconds_t)(pressHold * 1000000.0));
 
@@ -246,12 +282,18 @@ static double XLRandom(double minimum, double maximum) {
             double t = (double)i / (double)steps;
             double eased = t * t * (3.0 - 2.0 * t);
             double curve = 4.0 * t * (1.0 - t) * controlOffset;
-            double wobble = sin(M_PI * t) * sin(3.0 * M_PI * t) * wobbleAmplitude;
+            // Two out-of-phase harmonics read more like hand tremor than a
+            // single clean sine. Both are zero at t=0 and t=1.
+            double tremor =
+                sin(3.0 * M_PI * t + tremorPhase) * tremorAmplitude +
+                sin(tremorRate * M_PI * t) * tremorAmplitude * 0.5;
+            double wobble = sin(M_PI * t) * tremor;
             double x = startX + (endX - startX) * eased;
             double y = startY + (endY - startY) * eased + curve + wobble;
             success = [self sendX:x y:y phase:XLTouchPhaseMove];
             if (success) {
                 double interval = moveDuration * timingWeights[i - 1] / timingWeightTotal;
+                if (i == microPauseStep) interval += microPauseSeconds;
                 usleep((useconds_t)(interval * 1000000.0));
             }
         }
