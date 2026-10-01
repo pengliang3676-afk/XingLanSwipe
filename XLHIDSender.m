@@ -208,4 +208,62 @@ static double XLRandom(double minimum, double maximum) {
     });
 }
 
+// Right-to-left page turn. Uses the same natural curve as the up swipe, with
+// the axes swapped so the bow and wobble offsets ride on Y while X travels
+// across the page. The gesture stays in the central band, clear of the status
+// bar, the bottom edge and the control the back-check taps.
+- (void)performNaturalBackwardSwipeWithCompletion:(XLHIDCompletion)completion {
+    dispatch_async(_queue, ^{
+        if (![self ready]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(NO);
+            });
+            return;
+        }
+
+        double startY = XLRandom(0.46, 0.54);
+        double endY = MIN(MAX(startY + XLRandom(-0.025, 0.025), 0.45), 0.55);
+        double startX = XLRandom(0.82, 0.87);
+        double endX = XLRandom(0.20, 0.27);
+        double controlOffset = XLRandom(-0.018, 0.018);
+        double wobbleAmplitude = XLRandom(-0.0025, 0.0025);
+        double totalDuration = XLRandom(0.20, 0.65);
+        double pressHold = XLRandom(0.018, 0.030);
+        double releaseHold = XLRandom(0.008, 0.014);
+        double moveDuration = totalDuration - pressHold - releaseHold;
+        NSInteger steps = 24 + (NSInteger)arc4random_uniform(9);
+        double timingWeights[32];
+        double timingWeightTotal = 0.0;
+        for (NSInteger i = 0; i < steps; i++) {
+            timingWeights[i] = XLRandom(0.88, 1.12);
+            timingWeightTotal += timingWeights[i];
+        }
+
+        BOOL success = [self sendX:startX y:startY phase:XLTouchPhaseDown];
+        if (success) usleep((useconds_t)(pressHold * 1000000.0));
+
+        for (NSInteger i = 1; success && i <= steps; i++) {
+            double t = (double)i / (double)steps;
+            double eased = t * t * (3.0 - 2.0 * t);
+            double curve = 4.0 * t * (1.0 - t) * controlOffset;
+            double wobble = sin(M_PI * t) * sin(3.0 * M_PI * t) * wobbleAmplitude;
+            double x = startX + (endX - startX) * eased;
+            double y = startY + (endY - startY) * eased + curve + wobble;
+            success = [self sendX:x y:y phase:XLTouchPhaseMove];
+            if (success) {
+                double interval = moveDuration * timingWeights[i - 1] / timingWeightTotal;
+                usleep((useconds_t)(interval * 1000000.0));
+            }
+        }
+        if (success) {
+            usleep((useconds_t)(releaseHold * 1000000.0));
+            success = [self sendX:endX y:endY phase:XLTouchPhaseUp];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(success);
+        });
+    });
+}
+
 @end

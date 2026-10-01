@@ -18,28 +18,19 @@ static const double XLBackTapMinimumY = 0.942;
 static const double XLBackTapMaximumY = 0.982;
 static const double XLBackChevronThreshold = 0.65;
 
-// Right-edge tap mode. Points are normalized to the SE2 portrait screen and
-// sit roughly 8pt inside the right edge, well clear of the status bar (y<0.15)
-// and the bottom area (y>0.92).
-static const uint32_t XLEdgeClickMinimumDelay = 10;
-static const uint32_t XLEdgeClickMaximumDelay = 15;
-static const double XLEdgeClickBaseX = 0.979;
-static const double XLEdgeClickXJitter = 0.006;
-static const double XLEdgeClickYJitter = 0.010;
-static const double XLEdgeClickMinimumX = 0.930;
-static const double XLEdgeClickMaximumX = 0.990;
-static const double XLEdgeClickMinimumY = 0.150;
-static const double XLEdgeClickMaximumY = 0.900;
-static const double XLEdgeClickYPoints[] = {0.18, 0.32, 0.46, 0.60, 0.74, 0.88};
+// Right-to-left page-turn mode. The gesture itself is synthesized in
+// XLHIDSender; only its cadence lives here.
+static const uint32_t XLPageTurnMinimumDelay = 10;
+static const uint32_t XLPageTurnMaximumDelay = 15;
 
 typedef NS_ENUM(NSInteger, XLMode) {
     XLModeSwipe = XLModeSwipeValue,
-    XLModeClick = XLModeClickValue
+    XLModePageTurn = XLModePageTurnValue
 };
 
 static dispatch_source_t xlTimer;
 static dispatch_source_t xlBackTimer;
-static dispatch_source_t xlClickTimer;
+static dispatch_source_t xlPageTurnTimer;
 static XLMode xlMode = XLModeSwipe;
 static XLBackIconDetector *xlBackIconDetector;
 static dispatch_queue_t xlImageMatchQueue;
@@ -59,7 +50,7 @@ static UIButton *xlHomeStatusButton;
 static UIView *xlActionPanel;
 static UIButton *xlPauseButton;
 static UIButton *xlModeSwipeButton;
-static UIButton *xlModeClickButton;
+static UIButton *xlModePageTurnButton;
 static NSLayoutConstraint *xlActionPanelWidthConstraint;
 static BOOL xlActionMenuExpanded = NO;
 
@@ -69,7 +60,7 @@ static void XLHandleStatusButtonTap(void);
 static void XLHandlePauseButtonTap(void);
 static void XLHandleCloseButtonTap(void);
 static void XLHandleModeSwipeTap(void);
-static void XLHandleModeClickTap(void);
+static void XLHandleModePageTurnTap(void);
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -102,8 +93,8 @@ static void XLHandleModeClickTap(void);
     XLHandleModeSwipeTap();
 }
 
-- (void)xlModeClickTapped {
-    XLHandleModeClickTap();
+- (void)xlModePageTurnTapped {
+    XLHandleModePageTurnTap();
 }
 @end
 
@@ -170,17 +161,17 @@ static void XLUpdateUI(void) {
             : [UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0])
                        forState:UIControlStateNormal];
 
-        if (xlModeSwipeButton && xlModeClickButton) {
+        if (xlModeSwipeButton && xlModePageTurnButton) {
             BOOL swipeActive = (xlMode == XLModeSwipe);
             UIColor *activeColor = UIColor.whiteColor;
             UIColor *inactiveColor = [UIColor colorWithWhite:1.0 alpha:0.42];
             [xlModeSwipeButton setTitleColor:(swipeActive ? activeColor : inactiveColor)
                                     forState:UIControlStateNormal];
-            [xlModeClickButton setTitleColor:(swipeActive ? inactiveColor : activeColor)
-                                    forState:UIControlStateNormal];
+            [xlModePageTurnButton setTitleColor:(swipeActive ? inactiveColor : activeColor)
+                                       forState:UIControlStateNormal];
             xlModeSwipeButton.backgroundColor =
                 swipeActive ? [UIColor colorWithWhite:1.0 alpha:0.18] : UIColor.clearColor;
-            xlModeClickButton.backgroundColor =
+            xlModePageTurnButton.backgroundColor =
                 swipeActive ? UIColor.clearColor : [UIColor colorWithWhite:1.0 alpha:0.18];
         }
     }
@@ -220,10 +211,10 @@ static void XLScheduleSwipeAfterDelay(uint32_t delay);
 static void XLScheduleNextBackSwipe(void);
 static void XLScheduleBackSwipeAfterDelay(uint32_t delay);
 static void XLPerformBackSwipe(void);
-static void XLCancelClickTimer(void);
-static void XLScheduleClickAfterDelay(uint32_t delay);
-static void XLScheduleNextClick(void);
-static void XLPerformEdgeClick(void);
+static void XLCancelPageTurnTimer(void);
+static void XLSchedulePageTurnAfterDelay(uint32_t delay);
+static void XLScheduleNextPageTurn(void);
+static void XLPerformPageTurnSwipe(void);
 
 static BOOL XLGestureCooldownIsActive(void) {
     if (xlLastGestureEndTime <= 0.0) return NO;
@@ -400,68 +391,58 @@ static void XLScheduleNextBackSwipe(void) {
     XLScheduleBackSwipeAfterDelay(delay);
 }
 
-static void XLCancelClickTimer(void) {
-    if (xlClickTimer) {
-        dispatch_source_cancel(xlClickTimer);
-        xlClickTimer = nil;
+static void XLCancelPageTurnTimer(void) {
+    if (xlPageTurnTimer) {
+        dispatch_source_cancel(xlPageTurnTimer);
+        xlPageTurnTimer = nil;
     }
 }
 
-static void XLScheduleClickAfterDelay(uint32_t delay) {
-    XLCancelClickTimer();
-    if (!xlRunning || xlMode != XLModeClick) return;
-    NSLog(@"[XingLanSwipe] next edge click in %u seconds", delay);
-    xlClickTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+static void XLSchedulePageTurnAfterDelay(uint32_t delay) {
+    XLCancelPageTurnTimer();
+    if (!xlRunning || xlMode != XLModePageTurn) return;
+    NSLog(@"[XingLanSwipe] next page turn in %u seconds", delay);
+    xlPageTurnTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
         dispatch_get_main_queue());
-    dispatch_source_set_timer(xlClickTimer,
+    dispatch_source_set_timer(xlPageTurnTimer,
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_SEC),
         DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 4);
-    dispatch_source_set_event_handler(xlClickTimer, ^{ XLPerformEdgeClick(); });
-    dispatch_resume(xlClickTimer);
+    dispatch_source_set_event_handler(xlPageTurnTimer, ^{ XLPerformPageTurnSwipe(); });
+    dispatch_resume(xlPageTurnTimer);
 }
 
-static void XLScheduleNextClick(void) {
-    uint32_t delay = XLEdgeClickMinimumDelay +
-        arc4random_uniform(XLEdgeClickMaximumDelay - XLEdgeClickMinimumDelay + 1);
-    XLScheduleClickAfterDelay(delay);
+static void XLScheduleNextPageTurn(void) {
+    uint32_t delay = XLPageTurnMinimumDelay +
+        arc4random_uniform(XLPageTurnMaximumDelay - XLPageTurnMinimumDelay + 1);
+    XLSchedulePageTurnAfterDelay(delay);
 }
 
-static void XLPerformEdgeClick(void) {
-    XLCancelClickTimer();
-    if (!xlRunning || xlMode != XLModeClick) return;
+static void XLPerformPageTurnSwipe(void) {
+    XLCancelPageTurnTimer();
+    if (!xlRunning || xlMode != XLModePageTurn) return;
     if (xlActionBusy || XLGestureCooldownIsActive()) {
-        NSLog(@"[XingLanSwipe] edge click deferred to avoid action conflict");
-        XLScheduleClickAfterDelay(XLConflictRetryDelay);
+        NSLog(@"[XingLanSwipe] page turn deferred to avoid action conflict");
+        XLSchedulePageTurnAfterDelay(XLConflictRetryDelay);
         return;
     }
     xlActionBusy = YES;
     NSUInteger generation = xlRunGeneration;
 
-    NSUInteger pointCount = sizeof(XLEdgeClickYPoints) / sizeof(XLEdgeClickYPoints[0]);
-    NSUInteger pointIndex = pointCount > 0 ? arc4random_uniform((uint32_t)pointCount) : 0;
-    double x = MIN(MAX(XLEdgeClickBaseX +
-        XLRandomCoordinate(-XLEdgeClickXJitter, XLEdgeClickXJitter),
-        XLEdgeClickMinimumX), XLEdgeClickMaximumX);
-    double y = MIN(MAX(XLEdgeClickYPoints[pointIndex] +
-        XLRandomCoordinate(-XLEdgeClickYJitter, XLEdgeClickYJitter),
-        XLEdgeClickMinimumY), XLEdgeClickMaximumY);
-
     if (!xlSender) xlSender = [XLHIDSender new];
-    NSLog(@"[XingLanSwipe] edge click point %lu at %.4fx%.4f",
-          (unsigned long)pointIndex, x, y);
-    [xlSender performTapAtNormalizedX:x y:y completion:^(BOOL success) {
+    NSLog(@"[XingLanSwipe] page turn swipe");
+    [xlSender performNaturalBackwardSwipeWithCompletion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != xlRunGeneration) return;
             xlActionBusy = NO;
             if (success) {
                 xlLastGestureEndTime = CFAbsoluteTimeGetCurrent();
             } else {
-                // Keep the status fixed on "开" for successful taps; only a
+                // Keep the status fixed on "开" for successful swipes; only a
                 // failure is surfaced so a broken HID path stays visible.
-                XLShowStatusText(@"点×", 2.0);
+                XLShowStatusText(@"滑×", 2.0);
             }
-            NSLog(@"[XingLanSwipe] edge click %@", success ? @"success" : @"failed");
-            if (xlRunning) XLScheduleNextClick();
+            NSLog(@"[XingLanSwipe] page turn %@", success ? @"success" : @"failed");
+            if (xlRunning) XLScheduleNextPageTurn();
         });
     }];
 }
@@ -475,8 +456,8 @@ static XLMode XLReadModePreference(void) {
         if (CFGetTypeID(value) == CFNumberGetTypeID()) {
             CFIndex number = 0;
             if (CFNumberGetValue((CFNumberRef)value, kCFNumberCFIndexType, &number) &&
-                number == XLModeClick) {
-                mode = XLModeClick;
+                number == XLModePageTurn) {
+                mode = XLModePageTurn;
             }
         }
         CFRelease(value);
@@ -503,8 +484,8 @@ static void XLSetMode(XLMode mode) {
     xlMode = mode;
     XLWriteModePreference(mode);
     NSLog(@"[XingLanSwipe] mode set to %@",
-          mode == XLModeClick ? @"click" : @"swipe");
-    // Swipe and click never run together: drop the old mode's timers and
+          mode == XLModePageTurn ? @"page-turn" : @"swipe");
+    // Up-swipe and page turn never run together: drop the old mode's timers and
     // reschedule from scratch for the new one.
     if (xlRunning) {
         XLSetRunning(NO);
@@ -522,18 +503,18 @@ static void XLSetRunning(BOOL running) {
     xlRunning = running;
     xlRunGeneration++;
     if (xlRunning) {
-        if (xlMode == XLModeClick) {
-            XLScheduleNextClick();
+        if (xlMode == XLModePageTurn) {
+            XLScheduleNextPageTurn();
         } else {
             XLScheduleNext();
             XLScheduleNextBackSwipe();
         }
         NSLog(@"[XingLanSwipe] started in %@ mode",
-              xlMode == XLModeClick ? @"click" : @"swipe");
+              xlMode == XLModePageTurn ? @"page-turn" : @"swipe");
     } else {
         XLCancelTimer();
         XLCancelBackTimer();
-        XLCancelClickTimer();
+        XLCancelPageTurnTimer();
         xlActionBusy = NO;
         xlLastGestureEndTime = 0.0;
         NSLog(@"[XingLanSwipe] stopped");
@@ -569,8 +550,8 @@ static void XLHandleModeSwipeTap(void) {
     XLSetMode(XLModeSwipe);
 }
 
-static void XLHandleModeClickTap(void) {
-    XLSetMode(XLModeClick);
+static void XLHandleModePageTurnTap(void) {
+    XLSetMode(XLModePageTurn);
 }
 
 static void XLInstallStatusOverlay(void) {
@@ -663,18 +644,18 @@ static void XLInstallStatusOverlay(void) {
                         action:@selector(xlModeSwipeTapped)
               forControlEvents:UIControlEventTouchUpInside];
 
-    UIButton *modeClickButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    modeClickButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [modeClickButton setTitle:@"点击" forState:UIControlStateNormal];
-    [modeClickButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    modeClickButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
-    [modeClickButton addTarget:controller
-                        action:@selector(xlModeClickTapped)
-              forControlEvents:UIControlEventTouchUpInside];
+    UIButton *modePageTurnButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    modePageTurnButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [modePageTurnButton setTitle:@"左滑" forState:UIControlStateNormal];
+    [modePageTurnButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    modePageTurnButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
+    [modePageTurnButton addTarget:controller
+                           action:@selector(xlModePageTurnTapped)
+                 forControlEvents:UIControlEventTouchUpInside];
 
     [actionPanel addSubview:modeSwipeButton];
     [actionPanel addSubview:modeSeparator];
-    [actionPanel addSubview:modeClickButton];
+    [actionPanel addSubview:modePageTurnButton];
     [actionPanel addSubview:pauseButton];
     [actionPanel addSubview:separator];
     [actionPanel addSubview:closeButton];
@@ -713,7 +694,7 @@ static void XLInstallStatusOverlay(void) {
         panelWidth,
         [actionPanel.heightAnchor constraintEqualToConstant:102.0],
 
-        // Row 1: swipe / click mode selection.
+        // Row 1: up-swipe / page-turn mode selection.
         [modeSwipeButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
         [modeSwipeButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
         [modeSwipeButton.widthAnchor constraintEqualToConstant:75.0],
@@ -722,10 +703,10 @@ static void XLInstallStatusOverlay(void) {
         [modeSeparator.centerYAnchor constraintEqualToAnchor:modeSwipeButton.centerYAnchor],
         [modeSeparator.widthAnchor constraintEqualToConstant:1.5],
         [modeSeparator.heightAnchor constraintEqualToConstant:30.0],
-        [modeClickButton.leadingAnchor constraintEqualToAnchor:modeSeparator.trailingAnchor],
-        [modeClickButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
-        [modeClickButton.heightAnchor constraintEqualToConstant:51.0],
-        [modeClickButton.widthAnchor constraintEqualToConstant:73.5],
+        [modePageTurnButton.leadingAnchor constraintEqualToAnchor:modeSeparator.trailingAnchor],
+        [modePageTurnButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
+        [modePageTurnButton.heightAnchor constraintEqualToConstant:51.0],
+        [modePageTurnButton.widthAnchor constraintEqualToConstant:73.5],
         [rowDivider.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
         [rowDivider.topAnchor constraintEqualToAnchor:actionPanel.topAnchor constant:50.25],
         [rowDivider.widthAnchor constraintEqualToConstant:150.0],
@@ -751,7 +732,7 @@ static void XLInstallStatusOverlay(void) {
     xlActionPanel = actionPanel;
     xlPauseButton = pauseButton;
     xlModeSwipeButton = modeSwipeButton;
-    xlModeClickButton = modeClickButton;
+    xlModePageTurnButton = modePageTurnButton;
     xlActionPanelWidthConstraint = panelWidth;
     window.hidden = NO;
     XLUpdateUI();

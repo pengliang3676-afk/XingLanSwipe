@@ -8,6 +8,7 @@ typedef void (^XLHIDCompletion)(BOOL success);
 - (void)performNaturalUpSwipeWithCompletion:(XLHIDCompletion)completion;
 - (void)performNaturalSwipeUp:(BOOL)up
                    completion:(XLHIDCompletion)completion;
+- (void)performNaturalBackwardSwipeWithCompletion:(XLHIDCompletion)completion;
 - (void)performTapAtNormalizedX:(double)x
                               y:(double)y
                      completion:(XLHIDCompletion)completion;

@@ -6,4 +6,4 @@
 #define XLControlCenterStateNotification "com.jibeib.xinglanswipe.state-changed"
 
 #define XLModeSwipeValue 0
-#define XLModeClickValue 1
+#define XLModePageTurnValue 1
