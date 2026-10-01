@@ -1,6 +1,6 @@
 Package: com.jibeib.xinglanswipe
 Name: 星澜脚本
-Version: 2.6.5
+Version: 2.6.6
 Architecture: iphoneos-arm64
 Description: Dopamine rootless 正式版。控制中心开关为总开关；悬浮面板从上到下依次为「视频 / 小说 / 暂停 / 关闭」，视频与小说为模式选择（白字加高亮块），暂停在红开与绿停之间切换，关闭彻底停止。视频模式：翻页 180–300 秒，8% 概率下滑，返回识别 420–720 秒。小说模式：从右往左滑页，间隔 6–11 秒。
 Maintainer: XingLan

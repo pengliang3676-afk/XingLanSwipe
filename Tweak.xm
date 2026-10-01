@@ -27,7 +27,7 @@ static const uint32_t XLNovelMaximumDelay = 11;
 static const CGFloat XLStatusButtonSize = 54.0;
 static const CGFloat XLStatusButtonLeading = 5.0;
 static const CGFloat XLStatusButtonCenterOffset = 54.0;
-static const CGFloat XLPanelWidth = 100.0;
+static const CGFloat XLPanelWidth = 92.0;
 static const CGFloat XLPanelRowHeight = 40.0;
 static const CGFloat XLPanelHeight = 160.0;
 static const CGFloat XLPanelCornerRadius = 20.0;
@@ -120,7 +120,7 @@ static void XLSetActionMenuExpanded(BOOL expanded, BOOL animated) {
         xlActionPanel.userInteractionEnabled = YES;
     }
 
-    xlActionPanelWidthConstraint.constant = expanded ? 177.0 : 27.0;
+    xlActionPanelWidthConstraint.constant = expanded ? XLPanelWidth : XLPanelOverlap;
     void (^changes)(void) = ^{
         xlActionPanel.alpha = expanded ? 1.0 : 0.0;
         [xlOverlayRootView layoutIfNeeded];
