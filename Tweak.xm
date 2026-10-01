@@ -18,10 +18,24 @@ static const double XLBackTapMinimumY = 0.942;
 static const double XLBackTapMaximumY = 0.982;
 static const double XLBackChevronThreshold = 0.65;
 
-// Right-to-left page-turn mode. The gesture itself is synthesized in
-// XLHIDSender; only its cadence lives here.
-static const uint32_t XLPageTurnMinimumDelay = 10;
-static const uint32_t XLPageTurnMaximumDelay = 15;
+// Novel (right-to-left page turn) mode. The gesture is synthesized in
+// XLHIDSender; the cadence is user editable from the floating panel and stored
+// as "MIN-MAX" (or a single number for a fixed interval).
+static const uint32_t XLNovelIntervalMinimumSeconds = 1;
+static const uint32_t XLNovelIntervalMaximumSeconds = 3600;
+static const uint32_t XLNovelIntervalFallbackMinimum = 10;
+static const uint32_t XLNovelIntervalFallbackMaximum = 15;
+
+// Floating panel geometry, in points, tuned for the SE2 portrait screen.
+static const CGFloat XLStatusButtonSize = 54.0;
+static const CGFloat XLStatusButtonLeading = 5.0;
+static const CGFloat XLStatusButtonCenterOffset = 54.0;
+static const CGFloat XLPanelWidth = 180.0;
+static const CGFloat XLPanelRowHeight = 44.0;
+static const CGFloat XLPanelHeight = 132.0;
+static const CGFloat XLPanelCornerRadius = 22.0;
+static const CGFloat XLPanelOverlap = 27.0;
+static const CGFloat XLPanelDividerWidth = 1.5;
 
 typedef NS_ENUM(NSInteger, XLMode) {
     XLModeSwipe = XLModeSwipeValue,
@@ -50,7 +64,10 @@ static UIButton *xlHomeStatusButton;
 static UIView *xlActionPanel;
 static UIButton *xlPauseButton;
 static UIButton *xlModeSwipeButton;
-static UIButton *xlModePageTurnButton;
+static UIButton *xlModeNovelButton;
+static UIButton *xlIntervalButton;
+static UILabel *xlIntervalValueLabel;
+static UIWindow *xlIntervalEditorWindow;
 static NSLayoutConstraint *xlActionPanelWidthConstraint;
 static BOOL xlActionMenuExpanded = NO;
 
@@ -60,7 +77,13 @@ static void XLHandleStatusButtonTap(void);
 static void XLHandlePauseButtonTap(void);
 static void XLHandleCloseButtonTap(void);
 static void XLHandleModeSwipeTap(void);
-static void XLHandleModePageTurnTap(void);
+static void XLHandleModeNovelTap(void);
+static void XLHandleIntervalTap(void);
+static NSString *XLNovelIntervalText(void);
+static BOOL XLParseNovelInterval(NSString *text, uint32_t *minimum, uint32_t *maximum);
+static BOOL XLApplyNovelInterval(NSString *text);
+static void XLPresentIntervalAlert(UIWindow *host, NSString *initialText);
+static void XLTearDownIntervalEditorWindow(void);
 
 @interface XLStatusOverlayWindow : UIWindow
 @end
@@ -93,8 +116,12 @@ static void XLHandleModePageTurnTap(void);
     XLHandleModeSwipeTap();
 }
 
-- (void)xlModePageTurnTapped {
-    XLHandleModePageTurnTap();
+- (void)xlModeNovelTapped {
+    XLHandleModeNovelTap();
+}
+
+- (void)xlIntervalTapped {
+    XLHandleIntervalTap();
 }
 @end
 
@@ -161,18 +188,22 @@ static void XLUpdateUI(void) {
             : [UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0])
                        forState:UIControlStateNormal];
 
-        if (xlModeSwipeButton && xlModePageTurnButton) {
+        // Both modes always render in full white; only the highlight block
+        // marks which one is active.
+        UIColor *modeHighlight = [UIColor colorWithWhite:1.0 alpha:0.22];
+        if (xlModeSwipeButton && xlModeNovelButton) {
             BOOL swipeActive = (xlMode == XLModeSwipe);
-            UIColor *activeColor = UIColor.whiteColor;
-            UIColor *inactiveColor = [UIColor colorWithWhite:1.0 alpha:0.42];
-            [xlModeSwipeButton setTitleColor:(swipeActive ? activeColor : inactiveColor)
+            [xlModeSwipeButton setTitleColor:UIColor.whiteColor
                                     forState:UIControlStateNormal];
-            [xlModePageTurnButton setTitleColor:(swipeActive ? inactiveColor : activeColor)
-                                       forState:UIControlStateNormal];
+            [xlModeNovelButton setTitleColor:UIColor.whiteColor
+                                    forState:UIControlStateNormal];
             xlModeSwipeButton.backgroundColor =
-                swipeActive ? [UIColor colorWithWhite:1.0 alpha:0.18] : UIColor.clearColor;
-            xlModePageTurnButton.backgroundColor =
-                swipeActive ? UIColor.clearColor : [UIColor colorWithWhite:1.0 alpha:0.18];
+                swipeActive ? modeHighlight : UIColor.clearColor;
+            xlModeNovelButton.backgroundColor =
+                swipeActive ? UIColor.clearColor : modeHighlight;
+        }
+        if (xlIntervalValueLabel) {
+            xlIntervalValueLabel.text = XLNovelIntervalText();
         }
     }
 }
@@ -412,8 +443,13 @@ static void XLSchedulePageTurnAfterDelay(uint32_t delay) {
 }
 
 static void XLScheduleNextPageTurn(void) {
-    uint32_t delay = XLPageTurnMinimumDelay +
-        arc4random_uniform(XLPageTurnMaximumDelay - XLPageTurnMinimumDelay + 1);
+    uint32_t minimum = XLNovelIntervalFallbackMinimum;
+    uint32_t maximum = XLNovelIntervalFallbackMaximum;
+    if (!XLParseNovelInterval(XLNovelIntervalText(), &minimum, &maximum)) {
+        minimum = XLNovelIntervalFallbackMinimum;
+        maximum = XLNovelIntervalFallbackMaximum;
+    }
+    uint32_t delay = minimum + arc4random_uniform(maximum - minimum + 1);
     XLSchedulePageTurnAfterDelay(delay);
 }
 
@@ -473,6 +509,85 @@ static void XLWriteModePreference(XLMode mode) {
                              CFSTR(XLPreferenceDomain));
     CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
     if (value) CFRelease(value);
+}
+
+// The novel interval is stored as text so the panel can round trip exactly what
+// the user typed: "MIN-MAX" for a random range, or a single number for a fixed
+// delay. Anything unparsable falls back to the shipped default.
+static NSString *XLNovelIntervalText(void) {
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+    CFPropertyListRef value = CFPreferencesCopyAppValue(
+        CFSTR(XLNovelIntervalPreferenceKey), CFSTR(XLPreferenceDomain));
+    NSString *text = nil;
+    if (value) {
+        if (CFGetTypeID(value) == CFStringGetTypeID()) {
+            text = [(__bridge NSString *)value copy];
+        }
+        CFRelease(value);
+    }
+    if (text.length == 0 ||
+        ![XLParseNovelInterval(text, NULL, NULL)]) {
+        text = @XLNovelIntervalDefault;
+    }
+    return text;
+}
+
+static BOOL XLParseNovelInterval(NSString *text, uint32_t *minimum, uint32_t *maximum) {
+    if (text.length == 0) return NO;
+    NSCharacterSet *trimmed = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSString *normalized = [[text stringByTrimmingCharactersInSet:trimmed]
+        stringByReplacingOccurrencesOfString:@"\u2013" withString:@"-"];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"\u2014"
+                                                       withString:@"-"];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@" "
+                                                       withString:@""];
+    if (normalized.length == 0) return NO;
+
+    NSArray<NSString *> *parts = [normalized componentsSeparatedByString:@"-"];
+    if (parts.count == 0 || parts.count > 2) return NO;
+
+    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
+    NSCharacterSet *nonDigits = digits.invertedCharacterSet;
+    uint32_t lower = 0, upper = 0;
+    for (NSUInteger index = 0; index < parts.count; index++) {
+        NSString *part = parts[index];
+        if (part.length == 0 || [part rangeOfCharacterFromSet:nonDigits].location
+                                   != NSNotFound) {
+            return NO;
+        }
+        long long parsed = part.longLongValue;
+        if (parsed < (long long)XLNovelIntervalMinimumSeconds ||
+            parsed > (long long)XLNovelIntervalMaximumSeconds) {
+            return NO;
+        }
+        if (index == 0) lower = (uint32_t)parsed; else upper = (uint32_t)parsed;
+    }
+    if (parts.count == 1) upper = lower;
+    if (upper < lower) return NO;
+
+    if (minimum) *minimum = lower;
+    if (maximum) *maximum = upper;
+    return YES;
+}
+
+static void XLWriteNovelInterval(NSString *text) {
+    CFStringRef value = (__bridge CFStringRef)text;
+    CFPreferencesSetAppValue(CFSTR(XLNovelIntervalPreferenceKey), value,
+                             CFSTR(XLPreferenceDomain));
+    CFPreferencesAppSynchronize(CFSTR(XLPreferenceDomain));
+}
+
+// Applies a new interval typed by the user. Rejects anything unparsable.
+static BOOL XLApplyNovelInterval(NSString *text) {
+    if (!XLParseNovelInterval(text, NULL, NULL)) return NO;
+    XLWriteNovelInterval(text);
+    NSLog(@"[XingLanSwipe] novel interval set to %@", text);
+    XLUpdateUI();
+    if (xlRunning && xlMode == XLModePageTurn) {
+        // Restart the countdown so the new value takes effect immediately.
+        XLScheduleNextPageTurn();
+    }
+    return YES;
 }
 
 static void XLSetMode(XLMode mode) {
@@ -550,8 +665,102 @@ static void XLHandleModeSwipeTap(void) {
     XLSetMode(XLModeSwipe);
 }
 
-static void XLHandleModePageTurnTap(void) {
+static void XLHandleModeNovelTap(void) {
     XLSetMode(XLModePageTurn);
+}
+
+// Method A: a standard system alert owns the keyboard, so this tweak only
+// needs key window state for the lifetime of the alert.
+static void XLTearDownIntervalEditorWindow(void) {
+    if (!xlIntervalEditorWindow) return;
+    xlIntervalEditorWindow.hidden = YES;
+    xlIntervalEditorWindow = nil;
+}
+
+static void XLPresentIntervalAlert(UIWindow *host, NSString *initialText) {
+    UIViewController *root = host.rootViewController;
+    if (!root) return;
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"小说间隔"
+                         message:@"范围写 10-15（随机），固定值写一个数字，单位秒"
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = initialText;
+        field.placeholder = @XLNovelIntervalDefault;
+        field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+        field.textAlignment = NSTextAlignmentCenter;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        XLTearDownIntervalEditorWindow();
+    }]];
+    // Weak so the action handler does not retain the alert (and its text field)
+    // through the action it belongs to.
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        NSString *typed = weakAlert.textFields.firstObject.text;
+        if ([XLApplyNovelInterval(typed)]) {
+            XLTearDownIntervalEditorWindow();
+            return;
+        }
+        // Bad input: explain and reopen on the same host with the text kept.
+        NSLog(@"[XingLanSwipe] novel interval rejected: %@", typed);
+        UIAlertController *retry = [UIAlertController
+            alertControllerWithTitle:@"格式不对"
+                             message:[NSString stringWithFormat:
+                                 @"范围写成 10-15，固定值写一个数字（%u-%u 秒）。",
+                                 XLNovelIntervalMinimumSeconds,
+                                 XLNovelIntervalMaximumSeconds]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [retry addAction:[UIAlertAction actionWithTitle:@"重填"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *inner) {
+            (void)inner;
+            XLPresentIntervalAlert(host, typed);
+        }]];
+        // Wait for the dismissal animation before presenting again.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.35 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [root presentViewController:retry animated:YES completion:nil];
+        });
+    }]];
+    [root presentViewController:alert animated:YES completion:nil];
+}
+
+static void XLHandleIntervalTap(void) {
+    if (!xlControlEnabled) return;
+
+    UIWindowScene *activeScene = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:UIWindowScene.class] &&
+            scene.activationState != UISceneActivationStateUnattached) {
+            activeScene = (UIWindowScene *)scene;
+            break;
+        }
+    }
+
+    XLTearDownIntervalEditorWindow();
+    UIWindow *host;
+    if (@available(iOS 13.0, *)) {
+        host = activeScene ? [[UIWindow alloc] initWithWindowScene:activeScene]
+                           : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    } else {
+        host = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    }
+    host.windowLevel = UIWindowLevelAlert + 2000.0;
+    host.rootViewController = [UIViewController new];
+    xlIntervalEditorWindow = host;
+    [host makeKeyAndVisible];
+
+    XLPresentIntervalAlert(host, XLNovelIntervalText());
 }
 
 static void XLInstallStatusOverlay(void) {
@@ -593,7 +802,7 @@ static void XLInstallStatusOverlay(void) {
     UIView *actionPanel = [UIView new];
     actionPanel.translatesAutoresizingMaskIntoConstraints = NO;
     actionPanel.backgroundColor = [UIColor colorWithWhite:0.24 alpha:0.91];
-    actionPanel.layer.cornerRadius = 25.5;
+    actionPanel.layer.cornerRadius = XLPanelCornerRadius;
     actionPanel.layer.shadowColor = UIColor.blackColor.CGColor;
     actionPanel.layer.shadowOpacity = 0.28;
     actionPanel.layer.shadowRadius = 4.0;
@@ -603,12 +812,67 @@ static void XLInstallStatusOverlay(void) {
     actionPanel.alpha = 0.0;
     actionPanel.userInteractionEnabled = NO;
 
+    UIColor *actionColor =
+        [UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0];
+    UIColor *dividerColor = [UIColor colorWithWhite:1.0 alpha:0.22];
+
+    // Row 1: mode selection. Both titles stay full white; the highlight block
+    // alone marks the active mode.
+    UIButton *modeSwipeButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    modeSwipeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [modeSwipeButton setTitle:@"视频" forState:UIControlStateNormal];
+    [modeSwipeButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    modeSwipeButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
+    [modeSwipeButton addTarget:controller
+                        action:@selector(xlModeSwipeTapped)
+              forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *modeNovelButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    modeNovelButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [modeNovelButton setTitle:@"小说" forState:UIControlStateNormal];
+    [modeNovelButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    modeNovelButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
+    [modeNovelButton addTarget:controller
+                        action:@selector(xlModeNovelTapped)
+              forControlEvents:UIControlEventTouchUpInside];
+
+    // Row 2: novel interval. The whole row is one tap target that opens a
+    // system alert so the keyboard is owned by the system, not by this tweak.
+    UIButton *intervalButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    intervalButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [intervalButton addTarget:controller
+                       action:@selector(xlIntervalTapped)
+             forControlEvents:UIControlEventTouchUpInside];
+
+    UILabel *intervalCaption = [UILabel new];
+    intervalCaption.translatesAutoresizingMaskIntoConstraints = NO;
+    intervalCaption.text = @"间隔";
+    intervalCaption.font = [UIFont systemFontOfSize:13.0];
+    intervalCaption.textColor = [UIColor colorWithWhite:1.0 alpha:0.78];
+    intervalCaption.userInteractionEnabled = NO;
+
+    UILabel *intervalValue = [UILabel new];
+    intervalValue.translatesAutoresizingMaskIntoConstraints = NO;
+    intervalValue.text = @XLNovelIntervalDefault;
+    intervalValue.font = [UIFont boldSystemFontOfSize:15.0];
+    intervalValue.textColor = UIColor.whiteColor;
+    intervalValue.textAlignment = NSTextAlignmentCenter;
+    intervalValue.backgroundColor = [UIColor colorWithWhite:0.16 alpha:0.85];
+    intervalValue.layer.cornerRadius = 9.0;
+    intervalValue.layer.borderWidth = 1.0;
+    intervalValue.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.34].CGColor;
+    intervalValue.clipsToBounds = YES;
+    intervalValue.userInteractionEnabled = NO;
+
+    [intervalButton addSubview:intervalCaption];
+    [intervalButton addSubview:intervalValue];
+
+    // Row 3: pause / close.
     UIButton *pauseButton = [UIButton buttonWithType:UIButtonTypeCustom];
     pauseButton.translatesAutoresizingMaskIntoConstraints = NO;
     [pauseButton setTitle:@"暂停" forState:UIControlStateNormal];
-    [pauseButton setTitleColor:[UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0]
-                      forState:UIControlStateNormal];
-    pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
+    [pauseButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    pauseButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
     [pauseButton addTarget:controller
                     action:@selector(xlPauseTapped)
           forControlEvents:UIControlEventTouchUpInside];
@@ -616,50 +880,35 @@ static void XLInstallStatusOverlay(void) {
     UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeCustom];
     closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [closeButton setTitle:@"关闭" forState:UIControlStateNormal];
-    [closeButton setTitleColor:[UIColor colorWithRed:1.0 green:0.70 blue:0.72 alpha:1.0]
-                      forState:UIControlStateNormal];
-    closeButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
+    [closeButton setTitleColor:actionColor forState:UIControlStateNormal];
+    closeButton.titleLabel.font = [UIFont boldSystemFontOfSize:18.0];
     [closeButton addTarget:controller
                     action:@selector(xlCloseTapped)
           forControlEvents:UIControlEventTouchUpInside];
 
-    UIView *separator = [UIView new];
-    separator.translatesAutoresizingMaskIntoConstraints = NO;
-    separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
-
-    UIView *modeSeparator = [UIView new];
-    modeSeparator.translatesAutoresizingMaskIntoConstraints = NO;
-    modeSeparator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
-
-    UIView *rowDivider = [UIView new];
-    rowDivider.translatesAutoresizingMaskIntoConstraints = NO;
-    rowDivider.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
-
-    UIButton *modeSwipeButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    modeSwipeButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [modeSwipeButton setTitle:@"滑动" forState:UIControlStateNormal];
-    [modeSwipeButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    modeSwipeButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
-    [modeSwipeButton addTarget:controller
-                        action:@selector(xlModeSwipeTapped)
-              forControlEvents:UIControlEventTouchUpInside];
-
-    UIButton *modePageTurnButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    modePageTurnButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [modePageTurnButton setTitle:@"左滑" forState:UIControlStateNormal];
-    [modePageTurnButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    modePageTurnButton.titleLabel.font = [UIFont boldSystemFontOfSize:21.0];
-    [modePageTurnButton addTarget:controller
-                           action:@selector(xlModePageTurnTapped)
-                 forControlEvents:UIControlEventTouchUpInside];
+    // Row separators and the vertical splits inside rows 1 and 3.
+    UIView *dividerRow1 = [UIView new];
+    dividerRow1.translatesAutoresizingMaskIntoConstraints = NO;
+    dividerRow1.backgroundColor = dividerColor;
+    UIView *dividerRow2 = [UIView new];
+    dividerRow2.translatesAutoresizingMaskIntoConstraints = NO;
+    dividerRow2.backgroundColor = dividerColor;
+    UIView *splitMode = [UIView new];
+    splitMode.translatesAutoresizingMaskIntoConstraints = NO;
+    splitMode.backgroundColor = dividerColor;
+    UIView *splitAction = [UIView new];
+    splitAction.translatesAutoresizingMaskIntoConstraints = NO;
+    splitAction.backgroundColor = dividerColor;
 
     [actionPanel addSubview:modeSwipeButton];
-    [actionPanel addSubview:modeSeparator];
-    [actionPanel addSubview:modePageTurnButton];
+    [actionPanel addSubview:modeNovelButton];
+    [actionPanel addSubview:splitMode];
+    [actionPanel addSubview:intervalButton];
+    [actionPanel addSubview:dividerRow2];
     [actionPanel addSubview:pauseButton];
-    [actionPanel addSubview:separator];
     [actionPanel addSubview:closeButton];
-    [actionPanel addSubview:rowDivider];
+    [actionPanel addSubview:splitAction];
+    [actionPanel addSubview:dividerRow1];
     [controller.view addSubview:actionPanel];
 
     UIButton *status = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -668,7 +917,7 @@ static void XLInstallStatusOverlay(void) {
     status.titleLabel.font = [UIFont boldSystemFontOfSize:20.0];
     [status setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     status.backgroundColor = [UIColor colorWithWhite:0.35 alpha:0.82];
-    status.layer.cornerRadius = 27.0;
+    status.layer.cornerRadius = XLStatusButtonSize / 2.0;
     status.layer.borderWidth = 1.5;
     status.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.80].CGColor;
     status.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -683,48 +932,85 @@ static void XLInstallStatusOverlay(void) {
 
     UILayoutGuide *safeArea = controller.view.safeAreaLayoutGuide;
     NSLayoutConstraint *panelWidth =
-        [actionPanel.widthAnchor constraintEqualToConstant:27.0];
+        [actionPanel.widthAnchor constraintEqualToConstant:XLPanelOverlap];
+    CGFloat halfCell = (XLPanelWidth - XLPanelDividerWidth) / 2.0;
     [NSLayoutConstraint activateConstraints:@[
-        [status.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:5.0],
-        [status.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor constant:54.0],
-        [status.widthAnchor constraintEqualToConstant:54.0],
-        [status.heightAnchor constraintEqualToConstant:54.0],
+        [status.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor
+                                             constant:XLStatusButtonLeading],
+        [status.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor
+                                             constant:XLStatusButtonCenterOffset],
+        [status.widthAnchor constraintEqualToConstant:XLStatusButtonSize],
+        [status.heightAnchor constraintEqualToConstant:XLStatusButtonSize],
         [actionPanel.leadingAnchor constraintEqualToAnchor:status.centerXAnchor],
         [actionPanel.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
         panelWidth,
-        [actionPanel.heightAnchor constraintEqualToConstant:102.0],
+        [actionPanel.heightAnchor constraintEqualToConstant:XLPanelHeight],
 
-        // Row 1: up-swipe / page-turn mode selection.
-        [modeSwipeButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
+        // Rows are pinned to fixed offsets from the panel top so the three
+        // 44pt rows plus the two 1pt dividers total exactly XLPanelHeight.
+        // Each divider straddles a row boundary rather than consuming space.
+        // Row 1: video / novel.
+        [modeSwipeButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor
+                                                     constant:XLPanelOverlap],
         [modeSwipeButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
-        [modeSwipeButton.widthAnchor constraintEqualToConstant:75.0],
-        [modeSwipeButton.heightAnchor constraintEqualToConstant:51.0],
-        [modeSeparator.leadingAnchor constraintEqualToAnchor:modeSwipeButton.trailingAnchor],
-        [modeSeparator.centerYAnchor constraintEqualToAnchor:modeSwipeButton.centerYAnchor],
-        [modeSeparator.widthAnchor constraintEqualToConstant:1.5],
-        [modeSeparator.heightAnchor constraintEqualToConstant:30.0],
-        [modePageTurnButton.leadingAnchor constraintEqualToAnchor:modeSeparator.trailingAnchor],
-        [modePageTurnButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
-        [modePageTurnButton.heightAnchor constraintEqualToConstant:51.0],
-        [modePageTurnButton.widthAnchor constraintEqualToConstant:73.5],
-        [rowDivider.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
-        [rowDivider.topAnchor constraintEqualToAnchor:actionPanel.topAnchor constant:50.25],
-        [rowDivider.widthAnchor constraintEqualToConstant:150.0],
-        [rowDivider.heightAnchor constraintEqualToConstant:1.5],
+        [modeSwipeButton.widthAnchor constraintEqualToConstant:halfCell],
+        [modeSwipeButton.heightAnchor constraintEqualToConstant:XLPanelRowHeight],
+        [splitMode.leadingAnchor constraintEqualToAnchor:modeSwipeButton.trailingAnchor],
+        [splitMode.topAnchor constraintEqualToAnchor:actionPanel.topAnchor
+                                             constant:9.0],
+        [splitMode.widthAnchor constraintEqualToConstant:XLPanelDividerWidth],
+        [splitMode.heightAnchor constraintEqualToConstant:XLPanelRowHeight - 18.0],
+        [modeNovelButton.leadingAnchor constraintEqualToAnchor:splitMode.trailingAnchor],
+        [modeNovelButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor],
+        [modeNovelButton.widthAnchor constraintEqualToConstant:halfCell],
+        [modeNovelButton.heightAnchor constraintEqualToConstant:XLPanelRowHeight],
+        [dividerRow1.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor
+                                                  constant:XLPanelOverlap],
+        [dividerRow1.topAnchor constraintEqualToAnchor:actionPanel.topAnchor
+                                              constant:XLPanelRowHeight - 0.5],
+        [dividerRow1.widthAnchor constraintEqualToConstant:XLPanelWidth - XLPanelOverlap],
+        [dividerRow1.heightAnchor constraintEqualToConstant:1.0],
 
-        // Row 2: pause / close.
-        [pauseButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor constant:27.0],
-        [pauseButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
-        [pauseButton.widthAnchor constraintEqualToConstant:75.0],
-        [pauseButton.heightAnchor constraintEqualToConstant:51.0],
-        [separator.leadingAnchor constraintEqualToAnchor:pauseButton.trailingAnchor],
-        [separator.centerYAnchor constraintEqualToAnchor:pauseButton.centerYAnchor],
-        [separator.widthAnchor constraintEqualToConstant:1.5],
-        [separator.heightAnchor constraintEqualToConstant:30.0],
-        [closeButton.leadingAnchor constraintEqualToAnchor:separator.trailingAnchor],
-        [closeButton.bottomAnchor constraintEqualToAnchor:actionPanel.bottomAnchor],
-        [closeButton.heightAnchor constraintEqualToConstant:51.0],
-        [closeButton.widthAnchor constraintEqualToConstant:73.5],
+        // Row 2: novel interval, one full width tap target.
+        [intervalButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor
+                                                     constant:XLPanelOverlap],
+        [intervalButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor
+                                                 constant:XLPanelRowHeight],
+        [intervalButton.widthAnchor constraintEqualToConstant:XLPanelWidth - XLPanelOverlap],
+        [intervalButton.heightAnchor constraintEqualToConstant:XLPanelRowHeight],
+        [intervalCaption.leadingAnchor constraintEqualToAnchor:intervalButton.leadingAnchor
+                                                      constant:10.0],
+        [intervalCaption.centerYAnchor constraintEqualToAnchor:intervalButton.centerYAnchor],
+        [intervalValue.leadingAnchor constraintEqualToAnchor:intervalButton.leadingAnchor
+                                                    constant:44.0],
+        [intervalValue.centerYAnchor constraintEqualToAnchor:intervalButton.centerYAnchor],
+        [intervalValue.widthAnchor constraintEqualToConstant:72.0],
+        [intervalValue.heightAnchor constraintEqualToConstant:XLPanelRowHeight - 18.0],
+
+        // Row 3: pause / close.
+        [pauseButton.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor
+                                                  constant:XLPanelOverlap],
+        [pauseButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor
+                                              constant:2.0 * XLPanelRowHeight],
+        [pauseButton.widthAnchor constraintEqualToConstant:halfCell],
+        [pauseButton.heightAnchor constraintEqualToConstant:XLPanelRowHeight],
+        [splitAction.leadingAnchor constraintEqualToAnchor:pauseButton.trailingAnchor],
+        [splitAction.topAnchor constraintEqualToAnchor:actionPanel.topAnchor
+                                              constant:2.0 * XLPanelRowHeight + 9.0],
+        [splitAction.widthAnchor constraintEqualToConstant:XLPanelDividerWidth],
+        [splitAction.heightAnchor constraintEqualToConstant:XLPanelRowHeight - 18.0],
+        [closeButton.leadingAnchor constraintEqualToAnchor:splitAction.trailingAnchor],
+        [closeButton.topAnchor constraintEqualToAnchor:actionPanel.topAnchor
+                                              constant:2.0 * XLPanelRowHeight],
+        [closeButton.widthAnchor constraintEqualToConstant:halfCell],
+        [closeButton.heightAnchor constraintEqualToConstant:XLPanelRowHeight],
+
+        [dividerRow2.leadingAnchor constraintEqualToAnchor:actionPanel.leadingAnchor
+                                                  constant:XLPanelOverlap],
+        [dividerRow2.topAnchor constraintEqualToAnchor:actionPanel.topAnchor
+                                              constant:2.0 * XLPanelRowHeight - 0.5],
+        [dividerRow2.widthAnchor constraintEqualToConstant:XLPanelWidth - XLPanelOverlap],
+        [dividerRow2.heightAnchor constraintEqualToConstant:1.0],
     ]];
     xlStatusWindow = window;
     xlOverlayRootView = controller.view;
@@ -732,7 +1018,9 @@ static void XLInstallStatusOverlay(void) {
     xlActionPanel = actionPanel;
     xlPauseButton = pauseButton;
     xlModeSwipeButton = modeSwipeButton;
-    xlModePageTurnButton = modePageTurnButton;
+    xlModeNovelButton = modeNovelButton;
+    xlIntervalButton = intervalButton;
+    xlIntervalValueLabel = intervalValue;
     xlActionPanelWidthConstraint = panelWidth;
     window.hidden = NO;
     XLUpdateUI();
