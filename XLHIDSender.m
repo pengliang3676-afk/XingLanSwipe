@@ -250,11 +250,13 @@ static const double XLPageTurnMaximumY = 0.84;
         double tremorAmplitude = XLRandom(0.0016, 0.0034);
         double tremorPhase = XLRandom(0.0, 6.2831853);
         double tremorRate = XLRandom(2.2, 4.6);
-        double totalDuration = XLRandom(0.22, 0.62);
+        // Kept well under the ~0.5s long press threshold so the finger passing
+        // over an ad never registers as a hold.
+        double totalDuration = XLRandom(0.16, 0.32);
         double pressHold = XLRandom(0.018, 0.030);
         double releaseHold = XLRandom(0.008, 0.014);
         double moveDuration = totalDuration - pressHold - releaseHold;
-        NSInteger steps = 24 + (NSInteger)arc4random_uniform(9);
+        NSInteger steps = 20 + (NSInteger)arc4random_uniform(9);
         double timingWeights[32];
         double timingWeightTotal = 0.0;
         for (NSInteger i = 0; i < steps; i++) {
@@ -263,12 +265,13 @@ static const double XLPageTurnMaximumY = 0.84;
         }
 
         // A real finger does not cross the screen at a constant rate; roughly a
-        // third of swipes hesitate briefly somewhere along the way.
+        // quarter of swipes hesitate briefly. Kept short so the total hold time
+        // stays clear of the long press threshold.
         NSInteger microPauseStep = -1;
         double microPauseSeconds = 0.0;
-        if (steps > 8 && arc4random_uniform(100) < 35) {
+        if (steps > 8 && arc4random_uniform(100) < 25) {
             microPauseStep = 4 + (NSInteger)arc4random_uniform((uint32_t)(steps - 8));
-            microPauseSeconds = XLRandom(0.018, 0.050);
+            microPauseSeconds = XLRandom(0.012, 0.028);
         }
 
         NSLog(@"[XingLanSwipe] page turn anchor %lu y %.3f->%.3f x %.3f->%.3f dur %.2fs%@",
